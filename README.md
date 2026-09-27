@@ -235,6 +235,67 @@ While paused, `begin()` throws a `PausedException`. Outside a pause,
 `deleteProjectionsByType()`, `deleteAllProjections()`, and
 `Client::writeProjections()` throw a `NotPausedException`.
 
+## Middlewares
+
+A middleware wraps every append, every read, or both. It can change what
+goes in, what comes out, or answer on its own without calling the next
+layer.
+
+```php
+use TamarackDB\Middleware\AppendHandler;
+use TamarackDB\Middleware\AppendMiddleware;
+
+// Adds the tenant to every appended event.
+final class TenantMetadata implements AppendMiddleware
+{
+    public function __construct(private string $tenantId) {}
+
+    public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+    {
+        $events = array_map(fn (NewEvent $e) => new NewEvent(
+            $e->type, $e->identifiers, $e->metadata + ['tenantId' => [$this->tenantId]], $e->payload,
+        ), $events);
+
+        return $next->append($events, $condition, $ticket);
+    }
+}
+```
+
+```php
+use TamarackDB\Middleware\ReadHandler;
+use TamarackDB\Middleware\ReadMiddleware;
+use TamarackDB\Middleware\ReadRequest;
+
+// Turns old event versions into the current one.
+final class Upcaster implements ReadMiddleware
+{
+    public function readEvents(ReadRequest $request, ReadHandler $next): \Generator
+    {
+        foreach ($next->readEvents($request) as $event) {
+            yield $event->type === 'user-created.v1' ? $this->toV2($event) : $event;
+        }
+    }
+}
+```
+
+```php
+$client->addMiddleware(new TenantMetadata('acme'));
+$client->addMiddleware(new Upcaster());
+```
+
+- The last middleware added is the outermost layer: it runs first.
+- A class implementing both interfaces wraps both appends and reads.
+- Read middlewares wrap `Client::readEvents()` and
+  `Transaction::readEvents()`. `$request->ticket` is null outside a
+  transaction. `ReadRequest` has `with*()` methods to change the request.
+- Pagination happens below every middleware: a read middleware sees one
+  continuous stream of events.
+- A transaction keeps the middlewares its client had when it began.
+
+A read middleware must never change an event's `sequence`, and should not
+leave events out: your application relies on the last Sequence Position it
+read for its Append Conditions and to follow new events.
+
 ## Errors
 
 Every exception implements `TamarackDB\Exception\TamarackDBException`.

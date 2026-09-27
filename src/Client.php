@@ -13,7 +13,14 @@ use TamarackDB\Exception\TransactionQueueFullException;
 use TamarackDB\Http\CurlTransport;
 use TamarackDB\Http\Transport;
 use TamarackDB\Internal\Api;
+use TamarackDB\Internal\AppendDelegator;
 use TamarackDB\Internal\Json;
+use TamarackDB\Internal\ReadDelegator;
+use TamarackDB\Middleware\AppendHandler;
+use TamarackDB\Middleware\AppendMiddleware;
+use TamarackDB\Middleware\ReadHandler;
+use TamarackDB\Middleware\ReadMiddleware;
+use TamarackDB\Middleware\ReadRequest;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
@@ -29,6 +36,10 @@ final class Client
 {
     private readonly Api $api;
 
+    private AppendHandler $appendHandler;
+
+    private ReadHandler $readHandler;
+
     /**
      * @param float $queueTimeout seconds POST /begin and POST /pause may
      *                            wait for their turn in the server's queue
@@ -38,6 +49,8 @@ final class Client
         private readonly float $queueTimeout = 10.0,
     ) {
         $this->api = new Api($transport);
+        $this->appendHandler = $this->api;
+        $this->readHandler = $this->api;
     }
 
     /**
@@ -73,6 +86,23 @@ final class Client
     }
 
     /**
+     * Adds a middleware around every append, every read, or both, when it
+     * implements both interfaces. The last one added is the outermost
+     * layer: it runs first.
+     *
+     * A transaction keeps the middlewares its client had when it began.
+     */
+    public function addMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
+    {
+        if ($middleware instanceof AppendMiddleware) {
+            $this->appendHandler = new AppendDelegator($middleware, $this->appendHandler);
+        }
+        if ($middleware instanceof ReadMiddleware) {
+            $this->readHandler = new ReadDelegator($middleware, $this->readHandler);
+        }
+    }
+
+    /**
      * Opens a transaction. Waits for its turn when another one is active,
      * for at most the queue timeout.
      *
@@ -87,7 +117,7 @@ final class Client
             throw new ProtocolException('invalid POST /begin response');
         }
 
-        return new Transaction($this->api, $data['ticket']);
+        return new Transaction($this->api, $data['ticket'], $this->appendHandler, $this->readHandler);
     }
 
     /**
@@ -148,7 +178,7 @@ final class Client
         ?\DateTimeInterface $before = null,
         ?int $pageSize = null,
     ): \Generator {
-        return $this->api->readEvents(null, $query, $afterSequence, $from, $before, $pageSize);
+        return $this->readHandler->readEvents(new ReadRequest($query, $afterSequence, $from, $before, $pageSize));
     }
 
     /**

@@ -11,6 +11,9 @@ use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransactionEndedException;
 use TamarackDB\Internal\Api;
+use TamarackDB\Middleware\AppendHandler;
+use TamarackDB\Middleware\ReadHandler;
+use TamarackDB\Middleware\ReadRequest;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
@@ -35,6 +38,8 @@ final class Transaction
     public function __construct(
         private readonly Api $api,
         public readonly string $ticket,
+        private readonly AppendHandler $appendHandler,
+        private readonly ReadHandler $readHandler,
     ) {}
 
     /**
@@ -71,8 +76,9 @@ final class Transaction
         ?int $pageSize = null,
     ): \Generator {
         $this->assertActive();
+        $request = new ReadRequest($query, $afterSequence, $from, $before, $pageSize, $this->ticket);
         try {
-            yield from $this->api->readEvents($this->ticket, $query, $afterSequence, $from, $before, $pageSize);
+            yield from $this->readHandler->readEvents($request);
         } catch (ServerException $e) {
             $this->active = false;
             throw $e;
@@ -90,7 +96,7 @@ final class Transaction
      */
     public function append(array $events, ?AppendCondition $condition = null): array
     {
-        return $this->run(fn(): array => $this->api->append($this->ticket, $events, $condition));
+        return $this->run(fn(): array => $this->appendHandler->append($events, $condition, $this->ticket));
     }
 
     /**

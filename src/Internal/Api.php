@@ -8,17 +8,18 @@ use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
-use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\ProjectionNotFoundException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Http\Transport;
+use TamarackDB\Middleware\AppendHandler;
+use TamarackDB\Middleware\ReadHandler;
+use TamarackDB\Middleware\ReadRequest;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
-use TamarackDB\Query\Query;
 
 /**
  * The HTTP calls shared by Client, without a ticket, and Transaction,
@@ -26,7 +27,7 @@ use TamarackDB\Query\Query;
  *
  * @internal
  */
-final class Api
+final class Api implements AppendHandler, ReadHandler
 {
     public const string TICKET_HEADER = 'X-Tamarackdb-Ticket';
 
@@ -59,43 +60,32 @@ final class Api
     }
 
     /**
-     * @return \Generator<int, Event>
+     * The innermost layer of the read chain.
      */
-    public function readEvents(
-        ?string $ticket,
-        Query $query,
-        ?int $afterSequence,
-        ?\DateTimeInterface $from,
-        ?\DateTimeInterface $before,
-        ?int $pageSize,
-    ): \Generator {
-        if ($afterSequence !== null && $afterSequence < 0) {
-            throw new InvalidArgumentException('afterSequence must not be negative');
-        }
-        if ($pageSize !== null && $pageSize < 1) {
-            throw new InvalidArgumentException('pageSize must be at least 1');
-        }
-        $request = ['query' => $query->toJsonValue()];
-        if ($from !== null || $before !== null) {
-            $request['time'] = array_filter(
-                ['from' => $from === null ? null : Time::format($from), 'before' => $before === null ? null : Time::format($before)],
+    public function readEvents(ReadRequest $request): \Generator
+    {
+        $ticket = $request->ticket;
+        $afterSequence = $request->afterSequence;
+        $body = ['query' => $request->query->toJsonValue()];
+        if ($request->from !== null || $request->before !== null) {
+            $body['time'] = array_filter(
+                ['from' => $request->from === null ? null : Time::format($request->from), 'before' => $request->before === null ? null : Time::format($request->before)],
                 static fn(?string $bound): bool => $bound !== null,
             );
         }
-        if ($pageSize !== null) {
-            $request['limit'] = $pageSize;
+        if ($request->pageSize !== null) {
+            $body['limit'] = $request->pageSize;
         }
 
         $failures = 0;
         while (true) {
             if ($afterSequence !== null) {
-                $request['afterSequence'] = $afterSequence;
+                $body['afterSequence'] = $afterSequence;
             }
-            $body = Json::encode($request);
             $hasMore = null;
             $progress = false;
             try {
-                $lines = $this->transport->stream('QUERY', '/events', $this->headers($ticket, true), $body, $ticket !== null);
+                $lines = $this->transport->stream('QUERY', '/events', $this->headers($ticket, true), Json::encode($body), $ticket !== null);
                 foreach ($lines as $line) {
                     $data = Json::decodeObject($line);
                     if (\array_key_exists('hasMore', $data)) {
@@ -128,11 +118,9 @@ final class Api
     }
 
     /**
-     * @param list<NewEvent> $events
-     *
-     * @return list<AppendedEvent>
+     * The innermost layer of the append chain.
      */
-    public function append(string $ticket, array $events, ?AppendCondition $condition): array
+    public function append(array $events, ?AppendCondition $condition, string $ticket): array
     {
         $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), array_values($events))];
         if ($condition !== null && ($array = $condition->toArray()) !== []) {
