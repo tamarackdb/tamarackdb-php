@@ -52,22 +52,4 @@ final readonly class Event
 
         return new self($data['sequence'], Time::parse($data['time'] ?? null), $data['type'], $identifiers, $metadata, $data['payload']);
     }
-
-    /**
-     * The first value of an identifier, or null when the event carries none
-     * under that name.
-     */
-    public function identifier(string $name): ?string
-    {
-        return $this->identifiers[$name][0] ?? null;
-    }
-
-    /**
-     * The first value of a metadata entry, or null when the event carries
-     * none under that name.
-     */
-    public function metadataValue(string $name): ?string
-    {
-        return $this->metadata[$name][0] ?? null;
-    }
 }

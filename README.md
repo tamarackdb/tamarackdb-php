@@ -99,8 +99,7 @@ foreach ($client->readEvents(Query::all()) as $event) {
     $event->time;                   // DateTimeImmutable, UTC
     $event->type;                   // string
     $event->identifiers;            // ['userId' => ['123']]
-    $event->identifier('userId');   // '123'
-    $event->metadataValue('tenantId');
+    $event->metadata;               // ['tenantId' => ['acme']]
     $event->payload;                // string, exactly as appended
 }
 ```

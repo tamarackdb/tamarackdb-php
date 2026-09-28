@@ -48,7 +48,7 @@ final class MiddlewareTest extends TestCase
         $events = iterator_to_array($client->readEvents(Query::all(), pageSize: 7), false);
         self::assertCount(30, $events);
         self::assertSame('USER-CREATED', $events[0]->type);
-        self::assertSame('acme', $events[29]->metadataValue('tenantId'));
+        self::assertSame(['tenantId' => ['acme']], $events[29]->metadata);
 
         // Stopping a read through the chain still drains the page, so the
         // transaction survives.
