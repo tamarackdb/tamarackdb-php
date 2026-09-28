@@ -11,6 +11,7 @@ use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
+use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\TicketNotActiveException;
@@ -18,7 +19,6 @@ use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\Query;
 use TamarackDB\Query\QueryItem;
-use TamarackDB\Transaction;
 
 final class ClientTest extends TestCase
 {
@@ -41,10 +41,12 @@ final class ClientTest extends TestCase
 
     public function testCommittedEventsAreRead(): void
     {
-        $appended = $this->client->transactional(static fn(Transaction $tx): array => $tx->append([
+        $this->client->beginTransaction();
+        $appended = $this->client->appendEvents([
             new NewEvent('user-created', ['userId' => '123', 'courseId' => ['a', 'b']], ['tenantId' => 'acme'], '{"name":"Ada"}'),
             new NewEvent('user-created', ['userId' => '456']),
-        ]));
+        ]);
+        $this->client->commit();
 
         self::assertSame([1, 2], array_map(static fn($e): int => $e->sequence, $appended));
 
@@ -92,49 +94,36 @@ final class ClientTest extends TestCase
 
     public function testRollbackDiscardsEvents(): void
     {
-        $tx = $this->client->begin();
-        $tx->append([new NewEvent('user-created')]);
-        $tx->rollback();
+        $this->client->beginTransaction();
+        $this->client->appendEvents([new NewEvent('user-created')]);
+        $this->client->rollback();
 
         self::assertSame([], iterator_to_array($this->client->readEvents(Query::all()), false));
-    }
-
-    public function testTransactionalRollsBackOnFailure(): void
-    {
-        try {
-            $this->client->transactional(static function (Transaction $tx): never {
-                $tx->append([new NewEvent('user-created')]);
-                throw new \DomainException('handler failed');
-            });
-        } catch (\DomainException) {
-        }
-
-        self::assertSame([], iterator_to_array($this->client->readEvents(Query::all()), false));
-        $this->client->begin()->rollback();
     }
 
     public function testATicketReadSeesItsOwnEvents(): void
     {
         $this->appendUsers(3);
-        $tx = $this->client->begin();
-        $tx->append([new NewEvent('user-created', ['userId' => 'new'])]);
+        $other = TestServer::get($this)->client();
+        $this->client->beginTransaction();
+        $this->client->appendEvents([new NewEvent('user-created', ['userId' => 'new'])]);
 
-        self::assertSame([1, 2, 3, 4], self::sequences(iterator_to_array($tx->readEvents(Query::all()), false)));
-        self::assertSame([1, 2, 3], self::sequences(iterator_to_array($this->client->readEvents(Query::all()), false)));
+        self::assertSame([1, 2, 3, 4], self::sequences(iterator_to_array($this->client->readEvents(Query::all()), false)));
+        self::assertSame([1, 2, 3], self::sequences(iterator_to_array($other->readEvents(Query::all()), false)));
 
-        $tx->commit();
+        $this->client->commit();
     }
 
     public function testStoppingATicketReadKeepsTheTransaction(): void
     {
         $this->appendUsers(50);
-        $tx = $this->client->begin();
+        $this->client->beginTransaction();
 
-        foreach ($tx->readEvents(Query::all(), pageSize: 20) as $event) {
+        foreach ($this->client->readEvents(Query::all(), pageSize: 20) as $event) {
             break;
         }
-        $tx->append([new NewEvent('user-created')]);
-        $tx->commit();
+        $this->client->appendEvents([new NewEvent('user-created')]);
+        $this->client->commit();
 
         self::assertCount(51, iterator_to_array($this->client->readEvents(Query::all()), false));
     }
@@ -144,18 +133,18 @@ final class ClientTest extends TestCase
         $this->appendUsers(2);
         $query = Query::of(new QueryItem(identifiers: ['userId' => '2']));
 
-        $tx = $this->client->begin();
+        $this->client->beginTransaction();
         try {
-            $tx->append([new NewEvent('user-renamed', ['userId' => '2'])], new AppendCondition($query, 1));
+            $this->client->appendEvents([new NewEvent('user-renamed', ['userId' => '2'])], new AppendCondition($query, 1));
             self::fail('expected a ConcurrencyException');
         } catch (ConcurrencyException $e) {
             self::assertSame(409, $e->statusCode);
         }
-        self::assertFalse($tx->isActive());
+        self::assertFalse($this->client->inTransaction());
 
-        $appended = $this->client->transactional(
-            static fn(Transaction $tx): array => $tx->append([new NewEvent('user-renamed', ['userId' => '2'])], new AppendCondition($query, 2)),
-        );
+        $this->client->beginTransaction();
+        $appended = $this->client->appendEvents([new NewEvent('user-renamed', ['userId' => '2'])], new AppendCondition($query, 2));
+        $this->client->commit();
         self::assertSame(3, $appended[0]->sequence);
     }
 
@@ -169,46 +158,44 @@ final class ClientTest extends TestCase
     {
         $id = 'a/b c';
 
-        $created = $this->client->transactional(function (Transaction $tx) use ($id): string {
-            self::assertNull($tx->getProjection('user-profile', $id));
-            self::assertTrue($tx->isActive());
-
-            return $tx->writeProjections(new ProjectionWrites()->create('user-profile', $id, '{"v":1}'))->createVersions[0];
-        });
+        $this->client->beginTransaction();
+        self::assertNull($this->client->getProjection('user-profile', $id));
+        self::assertTrue($this->client->inTransaction());
+        $created = $this->client->writeProjections(new ProjectionWrites()->create('user-profile', $id, '{"v":1}'))->createVersions[0];
+        $this->client->commit();
 
         $projection = $this->client->getProjection('user-profile', $id);
         self::assertNotNull($projection);
         self::assertSame($created, $projection->version);
         self::assertSame('{"v":1}', $projection->payload);
 
-        $replaced = $this->client->transactional(static function (Transaction $tx) use ($id): string {
-            $current = $tx->getProjection('user-profile', $id);
-            self::assertNotNull($current);
-
-            return $tx->writeProjections(new ProjectionWrites()->replace('user-profile', $id, $current->version, ''))->replaceVersions[0];
-        });
+        $this->client->beginTransaction();
+        $current = $this->client->getProjection('user-profile', $id);
+        self::assertNotNull($current);
+        $replaced = $this->client->writeProjections(new ProjectionWrites()->replace('user-profile', $id, $current->version, ''))->replaceVersions[0];
+        $this->client->commit();
         self::assertNotSame($created, $replaced);
         self::assertSame('', $this->client->getProjection('user-profile', $id)?->payload);
 
+        $this->client->beginTransaction();
         try {
-            $this->client->transactional(
-                static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $created)),
-            );
+            $this->client->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $created));
             self::fail('expected a ConcurrencyException');
         } catch (ConcurrencyException) {
         }
+        self::assertFalse($this->client->inTransaction());
 
-        $this->client->transactional(
-            static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $replaced)),
-        );
+        $this->client->beginTransaction();
+        $this->client->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $replaced));
+        $this->client->commit();
         self::assertNull($this->client->getProjection('user-profile', $id));
     }
 
     public function testRebuild(): void
     {
-        $this->client->transactional(
-            static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->create('a', '1', 'x')->create('b', '1', 'y')),
-        );
+        $this->client->beginTransaction();
+        $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x')->create('b', '1', 'y'));
+        $this->client->commit();
 
         try {
             $this->client->deleteAllProjections();
@@ -219,7 +206,7 @@ final class ClientTest extends TestCase
         $this->client->pause();
         self::assertTrue($this->client->health()->paused);
         try {
-            $this->client->begin();
+            $this->client->beginTransaction();
             self::fail('expected a PausedException');
         } catch (PausedException) {
         }
@@ -237,30 +224,43 @@ final class ClientTest extends TestCase
         self::assertFalse($this->client->health()->paused);
     }
 
-    public function testBeginGivesUpAfterTheQueueTimeout(): void
+    public function testBeginTransactionGivesUpAfterTheQueueTimeout(): void
     {
-        $tx = $this->client->begin();
+        $this->client->beginTransaction();
         $impatient = TestServer::get($this)->client(queueTimeout: 0.3);
 
         $started = microtime(true);
         try {
-            $impatient->begin();
+            $impatient->beginTransaction();
             self::fail('expected a TimeoutException');
         } catch (TimeoutException) {
             self::assertLessThan(2.0, microtime(true) - $started);
         }
 
-        $tx->rollback();
-        $impatient->begin()->rollback();
+        self::assertFalse($impatient->inTransaction());
+
+        $this->client->rollback();
+        $impatient->beginTransaction();
+        $impatient->rollback();
     }
 
     public function testResetEndsTheActiveTransaction(): void
     {
-        $tx = $this->client->begin();
-        $this->client->reset();
+        $this->client->beginTransaction();
+        TestServer::get($this)->client()->reset();
 
-        $this->expectException(TicketNotActiveException::class);
-        $tx->commit();
+        try {
+            $this->client->commit();
+            self::fail('expected a TicketNotActiveException');
+        } catch (TicketNotActiveException) {
+        }
+        self::assertFalse($this->client->inTransaction());
+    }
+
+    public function testAppendWithoutATransaction(): void
+    {
+        $this->expectException(NoActiveTransactionException::class);
+        $this->client->appendEvents([new NewEvent('user-created')]);
     }
 
     public function testDebug(): void
@@ -273,10 +273,12 @@ final class ClientTest extends TestCase
 
     private function appendUsers(int $count): void
     {
-        $this->client->transactional(static fn(Transaction $tx): array => $tx->append(array_map(
+        $this->client->beginTransaction();
+        $this->client->appendEvents(array_map(
             static fn(int $i): NewEvent => new NewEvent('user-created', ['userId' => (string) $i], payload: 'user ' . $i),
             range(1, $count),
-        )));
+        ));
+        $this->client->commit();
     }
 
     /**

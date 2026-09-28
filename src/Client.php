@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace TamarackDB;
 
+use TamarackDB\Event\AppendCondition;
+use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\Event;
+use TamarackDB\Event\NewEvent;
+use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
-use TamarackDB\Exception\TamarackDBException;
+use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TimeoutException;
+use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\TransactionQueueFullException;
 use TamarackDB\Http\CurlTransport;
 use TamarackDB\Http\Transport;
@@ -27,7 +32,9 @@ use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\Query;
 
 /**
- * Client for one TamarackDB server.
+ * Client for one TamarackDB server. It holds at most one transaction at a
+ * time: beginTransaction() opens it, and every call until commit() or
+ * rollback() runs inside it.
  *
  *     $client = Client::http('http://127.0.0.1:8085');
  *     $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock', token: 'secret');
@@ -39,6 +46,8 @@ final class Client
     private AppendHandler $appendHandler;
 
     private ReadHandler $readHandler;
+
+    private ?string $ticket = null;
 
     /**
      * @param float $queueTimeout seconds POST /begin and POST /pause may
@@ -89,8 +98,6 @@ final class Client
      * Adds a middleware around every append, every read, or both, when it
      * implements both interfaces. The last one added is the outermost
      * layer: it runs first.
-     *
-     * A transaction keeps the middlewares its client had when it began.
      */
     public function addMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
     {
@@ -104,65 +111,76 @@ final class Client
 
     /**
      * Opens a transaction. Waits for its turn when another one is active,
-     * for at most the queue timeout.
+     * for at most the queue timeout. From then on, readEvents(),
+     * getProjection(), and writeProjections() run inside it, until
+     * commit() or rollback().
      *
+     * @throws TransactionAlreadyActiveException when this client already has a transaction
      * @throws TimeoutException when the turn didn't come in time
      * @throws PausedException when the server is paused for a projection rebuild
      * @throws TransactionQueueFullException when too many requests are already waiting
      */
-    public function begin(): Transaction
+    public function beginTransaction(): void
     {
+        if ($this->ticket !== null) {
+            throw new TransactionAlreadyActiveException(\sprintf('transaction %s is already active', $this->ticket));
+        }
         $data = Json::decodeObject($this->api->call('POST', '/begin', timeout: $this->queueTimeout)->body);
         if (!\is_string($data['ticket'] ?? null) || $data['ticket'] === '') {
             throw new ProtocolException('invalid POST /begin response');
         }
-
-        return new Transaction($this->api, $data['ticket'], $this->appendHandler, $this->readHandler);
+        $this->ticket = $data['ticket'];
     }
 
     /**
-     * Runs $command inside a new transaction, and commits it once $command
-     * returns, unless $command already ended it. When $command throws, the
-     * transaction is rolled back and the exception rethrown.
-     *
-     * @template T
-     *
-     * @param callable(Transaction): T $command
-     *
-     * @return T
+     * Whether this client has a transaction, as far as it knows. The server
+     * can still end it on its own, for example once its idle timeout is
+     * reached.
      */
-    public function transactional(callable $command): mixed
+    public function inTransaction(): bool
     {
-        $transaction = $this->begin();
-        try {
-            $result = $command($transaction);
-        } catch (\Throwable $e) {
-            if ($transaction->isActive()) {
-                try {
-                    $transaction->rollback();
-                } catch (TamarackDBException) {
-                    // The transaction is already gone, or the server can't
-                    // be reached: it rolls back on its own at its idle
-                    // timeout. The original failure is what matters.
-                }
-            }
-            throw $e;
-        }
-        if ($transaction->isActive()) {
-            $transaction->commit();
-        }
-
-        return $result;
+        return $this->ticket !== null;
     }
 
     /**
-     * Reads the committed events matching $query, oldest first. It never
-     * waits for the active transaction. Pages are fetched as the generator
-     * is consumed; a page cut short is resumed after the last event
-     * received, so no event is skipped or repeated.
+     * The ticket of the active transaction, or null outside one. Log it
+     * with the command it belongs to: when a transaction expires, the
+     * server logs a warning with that ticket.
+     */
+    public function getTicket(): ?string
+    {
+        return $this->ticket;
+    }
+
+    public function commit(): void
+    {
+        $ticket = $this->requireTicket();
+        $this->ticket = null;
+        $this->api->call('POST', '/commit', $ticket);
+    }
+
+    public function rollback(): void
+    {
+        $ticket = $this->requireTicket();
+        $this->ticket = null;
+        $this->api->call('POST', '/rollback', $ticket);
+    }
+
+    /**
+     * Reads the events matching $query, oldest first. Pages are fetched as
+     * the generator is consumed.
      *
-     * To follow new events, keep the last Sequence Position you got, and
-     * read again later with it as $afterSequence.
+     * Inside a transaction, the read sees the events appended earlier in
+     * it, and stays tied to that transaction even if the generator is
+     * consumed later. Stopping early is safe: the rest of the current page
+     * is read and discarded, since closing the connection would roll the
+     * transaction back.
+     *
+     * Outside a transaction, the read sees committed events only, and never
+     * waits for the active transaction. A page cut short is resumed after
+     * the last event received, so no event is skipped or repeated. To
+     * follow new events, keep the last Sequence Position you got, and read
+     * again later with it as $afterSequence.
      *
      * @param int|null $afterSequence only events after this Sequence Position
      * @param \DateTimeInterface|null $from only events appended at or after this time
@@ -178,25 +196,61 @@ final class Client
         ?\DateTimeInterface $before = null,
         ?int $pageSize = null,
     ): \Generator {
-        return $this->readHandler->readEvents(new ReadRequest($query, $afterSequence, $from, $before, $pageSize));
+        $ticket = $this->ticket;
+        $events = $this->readHandler->readEvents(new ReadRequest($query, $afterSequence, $from, $before, $pageSize, $ticket));
+
+        return $ticket === null ? $events : $this->endOnServerError($ticket, $events);
     }
 
     /**
-     * Reads a committed projection, or null when none exists.
+     * Appends events inside the active transaction, and returns the
+     * Sequence Position and time given to each, in order. With a
+     * condition, the append fails with a ConcurrencyException if an event
+     * matching it exists.
+     *
+     * @param list<NewEvent> $events at most 100
+     *
+     * @return list<AppendedEvent>
+     *
+     * @throws NoActiveTransactionException outside a transaction
+     */
+    public function appendEvents(array $events, ?AppendCondition $condition = null): array
+    {
+        $ticket = $this->requireTicket();
+
+        return $this->run($ticket, fn(): array => $this->appendHandler->append($events, $condition, $ticket));
+    }
+
+    /**
+     * Reads a projection, or null when none exists. Inside a transaction,
+     * it sees the projections written earlier in it, and a missing
+     * projection doesn't end the transaction. Outside one, it sees
+     * committed projections only.
      */
     public function getProjection(string $type, string $id): ?Projection
     {
-        return $this->api->getProjection(null, $type, $id);
+        $ticket = $this->ticket;
+        if ($ticket === null) {
+            return $this->api->getProjection(null, $type, $id);
+        }
+
+        return $this->run($ticket, fn(): ?Projection => $this->api->getProjection($ticket, $type, $id));
     }
 
     /**
-     * Writes projections outside any transaction, for a projection
-     * rebuild. Only accepted while the server is paused; each call commits
-     * on its own.
+     * Creates, replaces, and deletes projections. Inside a transaction,
+     * send every change in one call, right before the commit. Outside one,
+     * the server only accepts it while paused, for a projection rebuild,
+     * and each call commits on its own.
      */
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        return $this->api->writeProjections(null, $writes);
+        $ticket = $this->ticket;
+        if ($ticket === null) {
+            return $this->api->writeProjections(null, $writes);
+        }
+
+        return $this->run($ticket, fn(): ProjectionWriteResult => $this->api->writeProjections($ticket, $writes));
     }
 
     /**
@@ -218,8 +272,8 @@ final class Client
 
     /**
      * Pauses the server for a projection rebuild, once every transaction
-     * already queued has ended. From then on, begin() fails with a
-     * PausedException until resume().
+     * already queued has ended. From then on, beginTransaction() fails with
+     * a PausedException until resume().
      *
      * @throws TimeoutException when the turn didn't come within the queue timeout
      * @throws TransactionQueueFullException when too many requests are already waiting
@@ -261,6 +315,57 @@ final class Client
      */
     public function reset(): void
     {
+        $this->ticket = null;
         $this->api->call('POST', '/reset');
+    }
+
+    /**
+     * @template T
+     *
+     * @param \Closure(): T $call
+     *
+     * @return T
+     */
+    private function run(string $ticket, \Closure $call): mixed
+    {
+        try {
+            return $call();
+        } catch (ServerException $e) {
+            $this->forget($ticket);
+            throw $e;
+        }
+    }
+
+    /**
+     * @param \Generator<int, Event> $events
+     *
+     * @return \Generator<int, Event>
+     */
+    private function endOnServerError(string $ticket, \Generator $events): \Generator
+    {
+        try {
+            yield from $events;
+        } catch (ServerException $e) {
+            $this->forget($ticket);
+            throw $e;
+        }
+    }
+
+    /**
+     * Drops $ticket after a server error: the server rolled the
+     * transaction back. A missing projection never gets here, and a
+     * transport failure leaves the transaction unknown, so the ticket is
+     * kept and a rollback can still be attempted.
+     */
+    private function forget(string $ticket): void
+    {
+        if ($this->ticket === $ticket) {
+            $this->ticket = null;
+        }
+    }
+
+    private function requireTicket(): string
+    {
+        return $this->ticket ?? throw new NoActiveTransactionException('no active transaction');
     }
 }

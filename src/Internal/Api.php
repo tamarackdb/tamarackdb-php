@@ -22,8 +22,8 @@ use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
 
 /**
- * The HTTP calls shared by Client, without a ticket, and Transaction,
- * with one.
+ * The HTTP calls of Client, with a ticket inside a transaction and
+ * without one outside.
  *
  * @internal
  */

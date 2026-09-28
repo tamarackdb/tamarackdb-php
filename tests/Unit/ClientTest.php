@@ -10,16 +10,17 @@ use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
+use TamarackDB\Exception\InvalidRequestException;
+use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\TicketNotActiveException;
-use TamarackDB\Exception\TransactionEndedException;
+use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\Query;
 use TamarackDB\Query\QueryItem;
-use TamarackDB\Transaction;
 
 final class ClientTest extends TestCase
 {
@@ -35,25 +36,81 @@ final class ClientTest extends TestCase
         $this->client = new Client($this->transport, queueTimeout: 2.5);
     }
 
-    public function testBeginWaitsForTheQueueTimeout(): void
+    public function testBeginTransactionWaitsForTheQueueTimeout(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]));
 
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
-        self::assertSame(self::TICKET, $transaction->ticket);
-        self::assertTrue($transaction->isActive());
+        self::assertSame(self::TICKET, $this->client->getTicket());
+        self::assertTrue($this->client->inTransaction());
         self::assertSame('POST', $this->transport->requests[0]['method']);
         self::assertSame('/begin', $this->transport->requests[0]['path']);
         self::assertSame(2.5, $this->transport->requests[0]['timeout']);
     }
 
-    public function testBeginWhilePaused(): void
+    public function testBeginTransactionWhilePaused(): void
     {
         $this->transport->push(Responses::error(503, 'Paused'));
 
-        $this->expectException(PausedException::class);
-        $this->client->begin();
+        try {
+            $this->client->beginTransaction();
+            self::fail('expected a PausedException');
+        } catch (PausedException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
+    }
+
+    public function testBeginTransactionTwice(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]));
+        $this->client->beginTransaction();
+
+        $this->expectException(TransactionAlreadyActiveException::class);
+        $this->client->beginTransaction();
+    }
+
+    public function testCommit(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
+        $this->client->beginTransaction();
+
+        $this->client->commit();
+
+        self::assertFalse($this->client->inTransaction());
+        self::assertNull($this->client->getTicket());
+        self::assertSame('/commit', $this->transport->requests[1]['path']);
+        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+    }
+
+    public function testRollback(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
+        $this->client->beginTransaction();
+
+        $this->client->rollback();
+
+        self::assertFalse($this->client->inTransaction());
+        self::assertSame('/rollback', $this->transport->requests[1]['path']);
+        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+    }
+
+    public function testCommitWithoutATransaction(): void
+    {
+        $this->expectException(NoActiveTransactionException::class);
+        $this->client->commit();
+    }
+
+    public function testAppendWithoutATransaction(): void
+    {
+        try {
+            $this->client->appendEvents([new NewEvent('a')]);
+            self::fail('expected a NoActiveTransactionException');
+        } catch (NoActiveTransactionException) {
+        }
+
+        self::assertSame([], $this->transport->requests);
     }
 
     public function testReadEventsFollowsPages(): void
@@ -230,9 +287,9 @@ final class ClientTest extends TestCase
             Responses::json(['ticket' => self::TICKET]),
             Responses::json(['events' => [['sequence' => 5, 'time' => '2026-09-01T14:25:00.000000Z']]]),
         );
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
-        $appended = $transaction->append(
+        $appended = $this->client->appendEvents(
             [new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')],
             new AppendCondition(Query::of(new QueryItem(identifiers: ['userId' => '123'])), 4),
         );
@@ -254,7 +311,8 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
 
-        $this->client->begin()->append([], new AppendCondition());
+        $this->client->beginTransaction();
+        $this->client->appendEvents([], new AppendCondition());
 
         self::assertSame(['events' => []], $this->transport->body(1));
     }
@@ -262,9 +320,9 @@ final class ClientTest extends TestCase
     public function testATicketReadDrainsOnAbort(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::page([1, 2], false));
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
-        foreach ($transaction->readEvents(Query::all()) as $event) {
+        foreach ($this->client->readEvents(Query::all()) as $event) {
             break;
         }
 
@@ -275,101 +333,118 @@ final class ClientTest extends TestCase
     public function testATicketReadIsNotResumed(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), new CutStream([Responses::eventLine(1)]));
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
-        $this->expectException(TransportException::class);
-        iterator_to_array($transaction->readEvents(Query::all()));
+        try {
+            iterator_to_array($this->client->readEvents(Query::all()));
+            self::fail('expected a TransportException');
+        } catch (TransportException) {
+        }
+
+        self::assertTrue($this->client->inTransaction());
+    }
+
+    public function testAReadKeepsItsTicket(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent(), Responses::error(410, 'TicketNotActive'));
+        $this->client->beginTransaction();
+        $events = $this->client->readEvents(Query::all());
+        $this->client->commit();
+
+        try {
+            iterator_to_array($events);
+            self::fail('expected a TicketNotActiveException');
+        } catch (TicketNotActiveException) {
+        }
+
+        self::assertSame(self::TICKET, $this->transport->requests[2]['headers']['X-Tamarackdb-Ticket']);
+    }
+
+    public function testAReadErrorEndsTheTransaction(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(400, 'InvalidRequest'));
+        $this->client->beginTransaction();
+
+        try {
+            iterator_to_array($this->client->readEvents(Query::all()));
+            self::fail('expected an InvalidRequestException');
+        } catch (InvalidRequestException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
     }
 
     public function testAServerErrorEndsTheTransaction(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(409, 'ConcurrencyException'));
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
         try {
-            $transaction->append([new NewEvent('a')]);
+            $this->client->appendEvents([new NewEvent('a')]);
             self::fail('expected a ConcurrencyException');
         } catch (ConcurrencyException) {
         }
 
-        self::assertFalse($transaction->isActive());
-        $this->expectException(TransactionEndedException::class);
-        $transaction->commit();
+        self::assertFalse($this->client->inTransaction());
+        $this->expectException(NoActiveTransactionException::class);
+        $this->client->commit();
+    }
+
+    public function testATransportFailureKeepsTheTransaction(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), new TransportException('refused'));
+        $this->client->beginTransaction();
+
+        try {
+            $this->client->appendEvents([new NewEvent('a')]);
+            self::fail('expected a TransportException');
+        } catch (TransportException) {
+        }
+
+        self::assertTrue($this->client->inTransaction());
     }
 
     public function testAMissingProjectionKeepsTheTransaction(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(404, 'ProjectionNotFound'));
-        $transaction = $this->client->begin();
+        $this->client->beginTransaction();
 
-        self::assertNull($transaction->getProjection('a', '1'));
-        self::assertTrue($transaction->isActive());
-    }
-
-    public function testTransactionalCommits(): void
-    {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
-
-        $result = $this->client->transactional(static fn(Transaction $tx): string => 'done');
-
-        self::assertSame('done', $result);
-        self::assertSame('/commit', $this->transport->requests[1]['path']);
+        self::assertNull($this->client->getProjection('a', '1'));
+        self::assertTrue($this->client->inTransaction());
         self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
     }
 
-    public function testTransactionalRollsBackOnFailure(): void
+    public function testWriteProjectionsInsideATransaction(): void
+    {
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['create' => [['version' => 'c1']]]));
+        $this->client->beginTransaction();
+
+        $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x'));
+
+        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+    }
+
+    public function testResetForgetsTheTransaction(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
+        $this->client->beginTransaction();
 
-        try {
-            $this->client->transactional(static function (): never {
-                throw new \DomainException('handler failed');
-            });
-        } catch (\DomainException $e) {
-            self::assertSame('handler failed', $e->getMessage());
-        }
+        $this->client->reset();
 
-        self::assertSame('/rollback', $this->transport->requests[1]['path']);
-    }
-
-    public function testTransactionalKeepsTheOriginalFailure(): void
-    {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(410, 'TicketNotActive'));
-
-        $this->expectException(\DomainException::class);
-        $this->client->transactional(static function (): never {
-            throw new \DomainException('handler failed');
-        });
-    }
-
-    public function testTransactionalSkipsTheRollbackAfterAServerError(): void
-    {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(409, 'ConcurrencyException'));
-
-        try {
-            $this->client->transactional(static fn(Transaction $tx): array => $tx->append([new NewEvent('a')]));
-            self::fail('expected a ConcurrencyException');
-        } catch (ConcurrencyException) {
-        }
-
-        self::assertCount(2, $this->transport->requests);
-    }
-
-    public function testTransactionalLeavesAnEndedTransaction(): void
-    {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
-
-        $this->client->transactional(static fn(Transaction $tx) => $tx->rollback());
-
-        self::assertCount(2, $this->transport->requests);
-        self::assertSame('/rollback', $this->transport->requests[1]['path']);
+        self::assertFalse($this->client->inTransaction());
     }
 
     public function testCommitOnAnInactiveTicket(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(410, 'TicketNotActive'));
+        $this->client->beginTransaction();
 
-        $this->expectException(TicketNotActiveException::class);
-        $this->client->begin()->commit();
+        try {
+            $this->client->commit();
+            self::fail('expected a TicketNotActiveException');
+        } catch (TicketNotActiveException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
     }
 }

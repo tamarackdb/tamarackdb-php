@@ -50,7 +50,8 @@ final class MiddlewareTest extends TestCase
         });
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
 
-        $this->client->begin()->append([new NewEvent('a', metadata: ['tenantId' => 'acme'])]);
+        $this->client->beginTransaction();
+        $this->client->appendEvents([new NewEvent('a', metadata: ['tenantId' => 'acme'])]);
 
         self::assertSame(
             ['events' => [['type' => 'a', 'metadata' => ['tenantId' => 'acme', 'ticket' => self::TICKET], 'payload' => '']]],
@@ -68,9 +69,9 @@ final class MiddlewareTest extends TestCase
             Responses::page([], false),
         );
 
-        $tx = $this->client->begin();
-        $tx->append([]);
-        iterator_to_array($tx->readEvents(Query::all()));
+        $this->client->beginTransaction();
+        $this->client->appendEvents([]);
+        iterator_to_array($this->client->readEvents(Query::all()));
 
         self::assertSame(
             ['outer append before', 'inner append before', 'inner append after', 'outer append after', 'outer read', 'inner read'],
@@ -142,20 +143,10 @@ final class MiddlewareTest extends TestCase
         $this->transport->push(Responses::page([], false), Responses::json(['ticket' => self::TICKET]), Responses::page([], false));
 
         iterator_to_array($this->client->readEvents(Query::all()));
-        iterator_to_array($this->client->begin()->readEvents(Query::all()));
+        $this->client->beginTransaction();
+        iterator_to_array($this->client->readEvents(Query::all()));
 
         self::assertSame([null, self::TICKET], $tickets->getArrayCopy());
-    }
-
-    public function testATransactionKeepsTheMiddlewaresItBeganWith(): void
-    {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
-        $tx = $this->client->begin();
-
-        $this->client->addMiddleware($this->recorder('late'));
-        $tx->append([]);
-
-        self::assertSame([], $this->calls->getArrayCopy());
     }
 
     public function testReadRequestValidation(): void

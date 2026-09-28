@@ -8,7 +8,6 @@ use PHPUnit\Framework\TestCase;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\UnauthorizedException;
 use TamarackDB\Query\Query;
-use TamarackDB\Transaction;
 
 final class ConnectionTest extends TestCase
 {
@@ -17,7 +16,9 @@ final class ConnectionTest extends TestCase
         $client = TestServer::get($this, unixSocket: true)->client();
         $client->reset();
 
-        $client->transactional(static fn(Transaction $tx): array => $tx->append([new NewEvent('socket-event')]));
+        $client->beginTransaction();
+        $client->appendEvents([new NewEvent('socket-event')]);
+        $client->commit();
 
         $events = iterator_to_array($client->readEvents(Query::all()), false);
         self::assertCount(1, $events);

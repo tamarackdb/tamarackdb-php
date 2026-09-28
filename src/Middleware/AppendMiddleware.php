@@ -9,7 +9,7 @@ use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\NewEvent;
 
 /**
- * Wraps every Transaction::append() call of a Client.
+ * Wraps every Client::appendEvents() call.
  *
  * A middleware can change the events or the condition before calling
  * $next, act on the result after, or both. Register it with

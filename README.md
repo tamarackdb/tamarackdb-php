@@ -30,9 +30,9 @@ $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock');
 $client = Client::http('http://127.0.0.1:8085', token: 'secret', queueTimeout: 5.0, timeout: 30.0);
 ```
 
-`queueTimeout` is how long `begin()` and `pause()` wait for their turn when
-another transaction is active (10 seconds by default). Past it, they throw a
-`TimeoutException`. Pick it from how long your end user can wait.
+`queueTimeout` is how long `beginTransaction()` and `pause()` wait for their
+turn when another transaction is active (10 seconds by default). Past it,
+they throw a `TimeoutException`. Pick it from how long your end user can wait.
 
 ## Handling a command
 
@@ -40,53 +40,51 @@ A command runs in one transaction: read, decide, append, let your event
 handlers react, write projections, commit. Only one transaction is active at
 a time, so keep it short and inside one request of your application.
 
-`transactional()` opens the transaction, commits it when your callable
-returns, and rolls it back when it throws:
+The client holds the transaction, like PDO: `beginTransaction()` opens it,
+and every call until `commit()` or `rollback()` runs inside it.
 
 ```php
 use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Query\Query;
 use TamarackDB\Query\QueryItem;
-use TamarackDB\Transaction;
 
-$client->transactional(function (Transaction $tx) use ($userId, $name): void {
+$client->beginTransaction();
+try {
     $query = Query::of(new QueryItem(identifiers: ['userId' => $userId]));
 
     $last = null;
-    foreach ($tx->readEvents($query) as $event) {
+    foreach ($client->readEvents($query) as $event) {
         // Build your decision model from $event.
         $last = $event->sequence;
     }
 
-    $tx->append(
+    $client->appendEvents(
         [new NewEvent('user-renamed', ['userId' => $userId], ['tenantId' => 'acme'], json_encode(['name' => $name]))],
         new AppendCondition($query, $last),
     );
-});
-```
 
-You can also drive the transaction yourself:
-
-```php
-$tx = $client->begin();
-try {
-    // ...
-    $tx->commit();
+    $client->commit();
 } catch (\Throwable $e) {
-    if ($tx->isActive()) {
-        $tx->rollback();
+    if ($client->inTransaction()) {
+        $client->rollback();
     }
     throw $e;
 }
 ```
 
-Log `$tx->ticket` with the command it belongs to: when a transaction
-expires, the server logs a warning with that ticket.
+Log `$client->getTicket()` with the command it belongs to: when a
+transaction expires, the server logs a warning with that ticket.
+
+`beginTransaction()` throws a `TransactionAlreadyActiveException` when the
+client already has a transaction. `appendEvents()`, `commit()`, and
+`rollback()` throw a `NoActiveTransactionException` outside one.
 
 Any server error inside a transaction rolls it back on the server, except a
-missing projection. After that, the `Transaction` refuses further calls:
-open a new one and run the whole command again.
+missing projection. The client then drops the transaction:
+`inTransaction()` returns false. Begin a new one and run the whole command
+again. A transport failure leaves the transaction open on the client, so you
+can still call `rollback()`.
 
 ## Reading events
 
@@ -108,13 +106,14 @@ In `identifiers` and `metadata`, a name with one value maps to a string,
 a name with several values to a list. `NewEvent` and `QueryItem` expose
 them the same way.
 
-- `Client::readEvents()` reads committed events only, and never waits for
-  the active transaction. Use it to display data, for a projection rebuild,
-  or for the optimistic flow below.
-- `Transaction::readEvents()` reads inside the transaction, and also sees the
-  events appended earlier in it.
+- Inside a transaction, `readEvents()` also sees the events appended earlier
+  in it. The generator stays tied to that transaction, even if you consume
+  it later.
+- Outside a transaction, it reads committed events only, and never waits for
+  the active transaction. Use it to display data, or for a projection
+  rebuild.
 
-Both take the same filters:
+It takes these filters:
 
 ```php
 $client->readEvents(
@@ -145,11 +144,11 @@ connection would roll the transaction back.
 ## Appending events
 
 ```php
-$appended = $tx->append([
+$appended = $client->appendEvents([
     new NewEvent('user-created', ['userId' => '123'], ['tenantId' => 'acme'], '{"name":"Ada"}'),
 ]);
 
-$appended[0]->sequence; // final as soon as append() returns
+$appended[0]->sequence; // final as soon as appendEvents() returns
 $appended[0]->time;
 ```
 
@@ -162,27 +161,6 @@ A call carries at most 100 events.
 `ConcurrencyException` when an event matching `$query` exists after
 `$afterSequence`. The transaction is then rolled back.
 
-The optimistic flow reads and decides outside the transaction, so only the
-append and your event handlers hold the write lock:
-
-```php
-use TamarackDB\Exception\ConcurrencyException;
-
-while (true) {
-    $last = null;
-    foreach ($client->readEvents($query) as $event) {
-        $last = $event->sequence;
-    }
-    // decide, and build $events...
-    try {
-        $client->transactional(fn (Transaction $tx) => $tx->append($events, new AppendCondition($query, $last)));
-        break;
-    } catch (ConcurrencyException) {
-        // Someone appended in between: read and decide again.
-    }
-}
-```
-
 ## Projections
 
 A projection is an opaque payload identified by type and id, written in the
@@ -191,28 +169,28 @@ same transaction as the events it's computed from.
 ```php
 use TamarackDB\Projection\ProjectionWrites;
 
-$client->transactional(function (Transaction $tx): void {
-    // ... append events ...
+// Inside a transaction, after appending events:
+$writes = new ProjectionWrites();
 
-    $writes = new ProjectionWrites();
+$profile = $client->getProjection('user-profile', '123'); // null when missing
+if ($profile === null) {
+    $writes->create('user-profile', '123', '{"name":"Ada"}');
+} else {
+    $writes->replace('user-profile', '123', $profile->version, '{"name":"Ada Lovelace"}');
+}
+$writes->delete('user-list-entry', '456', $entryVersion);
 
-    $profile = $tx->getProjection('user-profile', '123'); // null when missing
-    if ($profile === null) {
-        $writes->create('user-profile', '123', '{"name":"Ada"}');
-    } else {
-        $writes->replace('user-profile', '123', $profile->version, '{"name":"Ada Lovelace"}');
-    }
-    $writes->delete('user-list-entry', '456', $entryVersion);
+// One call, right before the commit.
+$result = $client->writeProjections($writes);
+$result->createVersions;  // new versions, in order
+$result->replaceVersions;
 
-    // One call, right before the commit.
-    $result = $tx->writeProjections($writes);
-    $result->createVersions;  // new versions, in order
-    $result->replaceVersions;
-});
-
-// Outside a transaction, committed projections only:
-$profile = $client->getProjection('user-profile', '123');
+$client->commit();
 ```
+
+Inside a transaction, `getProjection()` sees the projections written earlier
+in it, and a missing projection doesn't end the transaction. Outside one, it
+reads committed projections only.
 
 `replace` and `delete` carry the version you read. When it no longer
 matches, the call fails with a `ConcurrencyException`.
@@ -228,15 +206,15 @@ $client->deleteProjectionsByType('user-profile'); // or deleteAllProjections()
 
 foreach ($client->readEvents(Query::all()) as $event) {
     // run your projectors, and every so often:
-    // $client->writeProjections($writes);     // commits on its own
+    // $client->writeProjections($writes);     // outside a transaction: commits on its own
 }
 
 $client->resume();
 ```
 
-While paused, `begin()` throws a `PausedException`. Outside a pause,
-`deleteProjectionsByType()`, `deleteAllProjections()`, and
-`Client::writeProjections()` throw a `NotPausedException`.
+While paused, `beginTransaction()` throws a `PausedException`. Outside a
+pause, `deleteProjectionsByType()`, `deleteAllProjections()`, and
+`writeProjections()` without a transaction throw a `NotPausedException`.
 
 ## Middlewares
 
@@ -288,12 +266,11 @@ $client->addMiddleware(new Upcaster());
 
 - The last middleware added is the outermost layer: it runs first.
 - A class implementing both interfaces wraps both appends and reads.
-- Read middlewares wrap `Client::readEvents()` and
-  `Transaction::readEvents()`. `$request->ticket` is null outside a
-  transaction. `ReadRequest` has `with*()` methods to change the request.
+- Append middlewares wrap `appendEvents()`, and read middlewares wrap
+  `readEvents()`. `$request->ticket` is null outside a transaction.
+  `ReadRequest` has `with*()` methods to change the request.
 - Pagination happens below every middleware: a read middleware sees one
   continuous stream of events.
-- A transaction keeps the middlewares its client had when it began.
 
 A read middleware must never change an event's `sequence`, and should not
 leave events out: your application relies on the last Sequence Position it
@@ -313,10 +290,11 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `PayloadTooLargeException` | 413: an event, a projection, or the request is too large |
 | `InternalErrorException` | 500 |
 | `TransactionQueueFullException` | 503: too many requests are waiting for a transaction |
-| `PausedException` | 503: `begin()` while the server is paused |
+| `PausedException` | 503: `beginTransaction()` while the server is paused |
 | `ShuttingDownException` | 503: the server is shutting down |
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
-| `TransactionEndedException` | a call on a `Transaction` that has already ended |
+| `TransactionAlreadyActiveException` | `beginTransaction()` while the client already has a transaction |
+| `NoActiveTransactionException` | `appendEvents()`, `commit()`, or `rollback()` without a transaction |
 | `TransportException` | no full response: server unreachable, connection dropped |
 | `TimeoutException` | a `TransportException`: the client stopped waiting |
 | `ProtocolException` | a response this client can't make sense of |
