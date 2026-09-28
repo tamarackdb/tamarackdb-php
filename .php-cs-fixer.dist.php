@@ -10,7 +10,8 @@ return new PhpCsFixer\Config()
     ->setRules([
         '@PER-CS2.0' => true,
         '@PER-CS2.0:risky' => true,
-        '@PHP84Migration' => true,
+        '@PHP8x5Migration' => true,
+        '@PHP8x5Migration:risky' => true,
         'declare_strict_types' => true,
         'native_function_invocation' => ['include' => ['@compiler_optimized'], 'scope' => 'namespaced'],
         'no_unused_imports' => true,

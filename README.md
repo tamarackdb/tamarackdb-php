@@ -9,7 +9,7 @@ tested against TamarackDB v0.24.0.
 
 ## Requirements
 
-- PHP 8.4 or later, with the `curl` and `json` extensions.
+- PHP 8.5 or later, with the `curl` and `json` extensions.
 - A running TamarackDB server, over TCP or its unix socket.
 
 ## Installation
