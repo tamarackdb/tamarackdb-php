@@ -15,7 +15,10 @@ use TamarackDB\Middleware\AppendMiddleware;
 use TamarackDB\Middleware\ReadHandler;
 use TamarackDB\Middleware\ReadMiddleware;
 use TamarackDB\Middleware\ReadRequest;
+use TamarackDB\Query\EventType;
+use TamarackDB\Query\Metadata;
 use TamarackDB\Query\Query;
+use TamarackDB\Query\QueryItem;
 
 final class MiddlewareTest extends TestCase
 {
@@ -71,7 +74,7 @@ final class MiddlewareTest extends TestCase
 
         $this->client->beginTransaction();
         $this->client->appendEvents([]);
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
 
         self::assertSame(
             ['outer append before', 'inner append before', 'inner append after', 'outer append after', 'outer read', 'inner read'],
@@ -91,7 +94,7 @@ final class MiddlewareTest extends TestCase
         });
         $this->transport->push(Responses::page([1, 2], true), Responses::page([3], false));
 
-        $types = array_map(static fn(Event $e): string => $e->type, iterator_to_array($this->client->readEvents(Query::all()), false));
+        $types = array_map(static fn(Event $e): string => $e->type, iterator_to_array($this->client->readEvents(null), false));
 
         self::assertSame(['user-created.v2', 'user-created.v2', 'user-created.v2'], $types);
     }
@@ -106,9 +109,29 @@ final class MiddlewareTest extends TestCase
         });
         $this->transport->push(Responses::page([], false));
 
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
 
         self::assertSame(['query' => '*', 'limit' => 50], $this->transport->body(0));
+    }
+
+    public function testAReadMiddlewareScopesTheQuery(): void
+    {
+        $this->client->addMiddleware(new class implements ReadMiddleware {
+            public function readEvents(ReadRequest $request, ReadHandler $next): \Generator
+            {
+                $scope = static fn(QueryItem $item): QueryItem => $item->with(Metadata::is('tenantId', 'acme'));
+
+                return $next->readEvents($request->withQuery($request->query?->map($scope) ?? new Query(Metadata::is('tenantId', 'acme'))));
+            }
+        });
+        $this->transport->push(Responses::page([], false), Responses::page([], false));
+
+        iterator_to_array($this->client->readEvents(new Query(EventType::in('a'))->or(EventType::in('b'))));
+        iterator_to_array($this->client->readEvents(null));
+
+        $tenant = [['name' => 'tenantId', 'value' => 'acme']];
+        self::assertSame([['types' => ['a'], 'metadata' => $tenant], ['types' => ['b'], 'metadata' => $tenant]], $this->transport->body(0)['query']);
+        self::assertSame([['metadata' => $tenant]], $this->transport->body(1)['query']);
     }
 
     public function testAReadMiddlewareCanAnswerOnItsOwn(): void
@@ -120,7 +143,7 @@ final class MiddlewareTest extends TestCase
             }
         });
 
-        $events = iterator_to_array($this->client->readEvents(Query::all()), false);
+        $events = iterator_to_array($this->client->readEvents(null), false);
 
         self::assertSame('cached', $events[0]->type);
         self::assertSame([], $this->transport->requests);
@@ -142,16 +165,16 @@ final class MiddlewareTest extends TestCase
         });
         $this->transport->push(Responses::page([], false), Responses::json(['ticket' => self::TICKET]), Responses::page([], false));
 
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
         $this->client->beginTransaction();
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
 
         self::assertSame([null, self::TICKET], $tickets->getArrayCopy());
     }
 
     public function testReadRequestValidation(): void
     {
-        $request = new ReadRequest(Query::all(), afterSequence: 3);
+        $request = new ReadRequest(null, afterSequence: 3);
         self::assertSame(3, $request->withPageSize(10)->afterSequence);
         self::assertSame(10, $request->withPageSize(10)->pageSize);
 

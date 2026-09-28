@@ -19,8 +19,9 @@ use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\EventType;
+use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Query;
-use TamarackDB\Query\QueryItem;
 
 final class ClientTest extends TestCase
 {
@@ -117,7 +118,7 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::page([1, 2], true), Responses::page([3], false));
 
-        $events = iterator_to_array($this->client->readEvents(Query::all(), pageSize: 2), false);
+        $events = iterator_to_array($this->client->readEvents(null, pageSize: 2), false);
 
         self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
         self::assertSame(['query' => '*', 'limit' => 2], $this->transport->body(0));
@@ -132,7 +133,7 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::page([7], false));
 
-        $event = iterator_to_array($this->client->readEvents(Query::all()), false)[0];
+        $event = iterator_to_array($this->client->readEvents(null), false)[0];
 
         self::assertSame(7, $event->sequence);
         self::assertSame('2026-09-01T14:23:05.123456+00:00', $event->time->format('Y-m-d\TH:i:s.uP'));
@@ -147,7 +148,7 @@ final class ClientTest extends TestCase
         $this->transport->push(Responses::page([], false));
 
         iterator_to_array($this->client->readEvents(
-            Query::of(new QueryItem(types: ['user-created'])),
+            new Query(EventType::in('user-created')),
             afterSequence: 10,
             from: new \DateTimeImmutable('2026-01-01T01:00:00+01:00'),
             before: new \DateTimeImmutable('2026-02-01T00:00:00.5Z'),
@@ -167,7 +168,7 @@ final class ClientTest extends TestCase
             Responses::page([3], false),
         );
 
-        $events = iterator_to_array($this->client->readEvents(Query::all()), false);
+        $events = iterator_to_array($this->client->readEvents(null), false);
 
         self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
         self::assertSame(2, $this->transport->body(1)['afterSequence']);
@@ -181,7 +182,7 @@ final class ClientTest extends TestCase
             Responses::page([2], false),
         );
 
-        $events = iterator_to_array($this->client->readEvents(Query::all()), false);
+        $events = iterator_to_array($this->client->readEvents(null), false);
 
         self::assertSame([1, 2], array_map(static fn(Event $e): int => $e->sequence, $events));
         self::assertSame(1, $this->transport->body(1)['afterSequence']);
@@ -197,7 +198,7 @@ final class ClientTest extends TestCase
         );
 
         $this->expectException(TransportException::class);
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
     }
 
     public function testReadEventsRejectsGarbage(): void
@@ -205,7 +206,7 @@ final class ClientTest extends TestCase
         $this->transport->push(new Response(200, [], "not json\n"));
 
         $this->expectException(ProtocolException::class);
-        iterator_to_array($this->client->readEvents(Query::all()));
+        iterator_to_array($this->client->readEvents(null));
     }
 
     public function testGetProjection(): void
@@ -291,7 +292,7 @@ final class ClientTest extends TestCase
 
         $appended = $this->client->appendEvents(
             [new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')],
-            new AppendCondition(Query::of(new QueryItem(identifiers: ['userId' => '123'])), 4),
+            new AppendCondition(new Query(Identifier::is('userId', '123')), 4),
         );
 
         self::assertCount(1, $appended);
@@ -322,7 +323,7 @@ final class ClientTest extends TestCase
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::page([1, 2], false));
         $this->client->beginTransaction();
 
-        foreach ($this->client->readEvents(Query::all()) as $event) {
+        foreach ($this->client->readEvents(null) as $event) {
             break;
         }
 
@@ -336,7 +337,7 @@ final class ClientTest extends TestCase
         $this->client->beginTransaction();
 
         try {
-            iterator_to_array($this->client->readEvents(Query::all()));
+            iterator_to_array($this->client->readEvents(null));
             self::fail('expected a TransportException');
         } catch (TransportException) {
         }
@@ -348,7 +349,7 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent(), Responses::error(410, 'TicketNotActive'));
         $this->client->beginTransaction();
-        $events = $this->client->readEvents(Query::all());
+        $events = $this->client->readEvents(null);
         $this->client->commit();
 
         try {
@@ -366,7 +367,7 @@ final class ClientTest extends TestCase
         $this->client->beginTransaction();
 
         try {
-            iterator_to_array($this->client->readEvents(Query::all()));
+            iterator_to_array($this->client->readEvents(null));
             self::fail('expected an InvalidRequestException');
         } catch (InvalidRequestException) {
         }

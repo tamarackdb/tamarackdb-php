@@ -8,13 +8,14 @@ use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Query\Query;
 
 /**
- * A readEvents() call, as ReadMiddleware sees it. $ticket is null for a
- * read outside any transaction.
+ * A readEvents() call, as ReadMiddleware sees it. $query is null for a
+ * read of every event, and $ticket is null for a read outside any
+ * transaction.
  */
 final readonly class ReadRequest
 {
     public function __construct(
-        public Query $query,
+        public ?Query $query,
         public ?int $afterSequence = null,
         public ?\DateTimeInterface $from = null,
         public ?\DateTimeInterface $before = null,
@@ -29,7 +30,7 @@ final readonly class ReadRequest
         }
     }
 
-    public function withQuery(Query $query): self
+    public function withQuery(?Query $query): self
     {
         return new self($query, $this->afterSequence, $this->from, $this->before, $this->pageSize, $this->ticket);
     }

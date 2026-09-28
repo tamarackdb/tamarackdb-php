@@ -66,7 +66,7 @@ final class Api implements AppendHandler, ReadHandler
     {
         $ticket = $request->ticket;
         $afterSequence = $request->afterSequence;
-        $body = ['query' => $request->query->toJsonValue()];
+        $body = ['query' => $request->query?->toArray() ?? '*'];
         if ($request->from !== null || $request->before !== null) {
             $body['time'] = array_filter(
                 ['from' => $request->from === null ? null : Time::format($request->from), 'before' => $request->before === null ? null : Time::format($request->before)],

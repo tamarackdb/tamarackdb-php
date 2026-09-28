@@ -167,8 +167,8 @@ final class Client
     }
 
     /**
-     * Reads the events matching $query, oldest first. Pages are fetched as
-     * the generator is consumed.
+     * Reads the events matching $query, or every event when $query is
+     * null, oldest first. Pages are fetched as the generator is consumed.
      *
      * Inside a transaction, the read sees the events appended earlier in
      * it, and stays tied to that transaction even if the generator is
@@ -190,7 +190,7 @@ final class Client
      * @return \Generator<int, Event>
      */
     public function readEvents(
-        Query $query,
+        ?Query $query,
         ?int $afterSequence = null,
         ?\DateTimeInterface $from = null,
         ?\DateTimeInterface $before = null,

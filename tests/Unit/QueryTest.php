@@ -9,23 +9,22 @@ use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\InvalidArgumentException;
+use TamarackDB\Query\EventType;
+use TamarackDB\Query\Identifier;
+use TamarackDB\Query\Metadata;
 use TamarackDB\Query\Query;
 use TamarackDB\Query\QueryItem;
 
 final class QueryTest extends TestCase
 {
-    public function testAllIsAStar(): void
-    {
-        self::assertSame('*', Query::all()->toJsonValue());
-        self::assertTrue(Query::all()->isAll());
-    }
-
     public function testItemsUseTheWireShape(): void
     {
-        $query = Query::of(
-            new QueryItem(types: ['user-created', 'user-updated'], identifiers: ['userId' => '123', 'tag' => ['a', 'b']]),
-            new QueryItem(metadata: ['tenantId' => 'acme']),
-        );
+        $query = new Query(
+            EventType::in('user-created', 'user-updated'),
+            Identifier::is('userId', '123'),
+            Identifier::is('tag', 'a'),
+            Identifier::is('tag', 'b'),
+        )->or(Metadata::is('tenantId', 'acme'));
 
         self::assertSame([
             [
@@ -37,25 +36,71 @@ final class QueryTest extends TestCase
                 ],
             ],
             ['metadata' => [['name' => 'tenantId', 'value' => 'acme']]],
-        ], $query->toJsonValue());
+        ], $query->toArray());
     }
 
-    public function testAnEmptyItemIsRejected(): void
+    public function testAnItemUsesTheCompactShape(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        new QueryItem();
+        $item = new QueryItem(
+            EventType::in('a', 'b'),
+            EventType::in('b', 'c'),
+            Identifier::is('userId', '123'),
+            Identifier::is('tag', 'a'),
+            Identifier::is('tag', 'b'),
+            Identifier::is('tag', 'a'),
+        );
+
+        self::assertSame(['a', 'b', 'c'], $item->types);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], $item->identifiers);
+        self::assertSame([], $item->metadata);
     }
 
-    public function testAnEmptyQueryIsRejected(): void
+    public function testWithAddsFilters(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        Query::of();
+        $item = new QueryItem(Identifier::is('userId', '123'));
+
+        $scoped = $item->with(Metadata::is('tenantId', 'acme'), Identifier::is('userId', '456'));
+
+        self::assertSame(['userId' => ['123', '456']], $scoped->identifiers);
+        self::assertSame(['tenantId' => 'acme'], $scoped->metadata);
+        self::assertSame(['userId' => '123'], $item->identifiers);
     }
 
-    public function testAnEmptyValueListIsRejected(): void
+    public function testOrAndMapReturnCopies(): void
+    {
+        $query = new Query(EventType::in('a'));
+
+        $more = $query->or(EventType::in('b'));
+        $mapped = $more->map(static fn(QueryItem $item): QueryItem => $item->with(Metadata::is('tenantId', 'acme')));
+
+        self::assertCount(1, $query->items);
+        self::assertCount(2, $more->items);
+        self::assertSame([], $more->items[1]->metadata);
+        self::assertSame(['tenantId' => 'acme'], $mapped->items[1]->metadata);
+    }
+
+    public function testEventTypeNeedsATypeList(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        new QueryItem(identifiers: ['userId' => []]);
+        EventType::in();
+    }
+
+    public function testAnEmptyEventTypeIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        EventType::in('a', '');
+    }
+
+    public function testAnEmptyIdentifierNameIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Identifier::is('', '123');
+    }
+
+    public function testAnEmptyMetadataNameIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Metadata::is('', 'acme');
     }
 
     public function testNewEventUsesTheCompactShape(): void
@@ -75,8 +120,13 @@ final class QueryTest extends TestCase
         $tags = ['userId' => ['123'], 'tag' => ['a', 'b']];
 
         self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new NewEvent('a', $tags, $tags)->metadata);
-        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new QueryItem(identifiers: $tags)->identifiers);
         self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new Event(1, new \DateTimeImmutable(), 'a', $tags, [], '')->identifiers);
+    }
+
+    public function testAnEmptyValueListIsRejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new NewEvent('a', ['userId' => []]);
     }
 
     public function testNewEventNeedsAType(): void
@@ -90,8 +140,8 @@ final class QueryTest extends TestCase
         self::assertSame([], new AppendCondition()->toArray());
         self::assertSame(['afterSequence' => 0], new AppendCondition(afterSequence: 0)->toArray());
         self::assertSame(
-            ['failIfEventsMatch' => '*', 'afterSequence' => 12],
-            new AppendCondition(Query::all(), 12)->toArray(),
+            ['failIfEventsMatch' => [['types' => ['a']]], 'afterSequence' => 12],
+            new AppendCondition(new Query(EventType::in('a')), 12)->toArray(),
         );
     }
 }

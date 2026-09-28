@@ -7,7 +7,6 @@ namespace TamarackDB\Tests\Integration;
 use PHPUnit\Framework\TestCase;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\UnauthorizedException;
-use TamarackDB\Query\Query;
 
 final class ConnectionTest extends TestCase
 {
@@ -20,7 +19,7 @@ final class ConnectionTest extends TestCase
         $client->appendEvents([new NewEvent('socket-event')]);
         $client->commit();
 
-        $events = iterator_to_array($client->readEvents(Query::all()), false);
+        $events = iterator_to_array($client->readEvents(null), false);
         self::assertCount(1, $events);
         self::assertSame('socket-event', $events[0]->type);
     }

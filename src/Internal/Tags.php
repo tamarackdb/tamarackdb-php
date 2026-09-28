@@ -50,6 +50,25 @@ final class Tags
     }
 
     /**
+     * Adds one value to tags in compact form, unless it's already there.
+     *
+     * @param array<string, string|list<string>> $tags
+     *
+     * @return array<string, string|list<string>>
+     */
+    public static function add(array $tags, string $name, string $value): array
+    {
+        $values = $tags[$name] ?? [];
+        $values = \is_string($values) ? [$values] : $values;
+        if (!\in_array($value, $values, true)) {
+            $values[] = $value;
+        }
+        $tags[$name] = \count($values) === 1 ? $values[0] : $values;
+
+        return $tags;
+    }
+
+    /**
      * @param array<string, string|list<string>> $tags
      *
      * @return list<array{name: string, value: string}>

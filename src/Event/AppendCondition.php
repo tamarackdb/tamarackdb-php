@@ -9,7 +9,8 @@ use TamarackDB\Query\Query;
 
 /**
  * Makes an append fail with a ConcurrencyException when an event matching
- * $failIfEventsMatch exists after $afterSequence. Both are optional.
+ * $failIfEventsMatch exists after $afterSequence. Both are optional:
+ * without a query, any event after $afterSequence fails the append.
  */
 final readonly class AppendCondition
 {
@@ -29,7 +30,7 @@ final readonly class AppendCondition
     {
         $condition = [];
         if ($this->failIfEventsMatch !== null) {
-            $condition['failIfEventsMatch'] = $this->failIfEventsMatch->toJsonValue();
+            $condition['failIfEventsMatch'] = $this->failIfEventsMatch->toArray();
         }
         if ($this->afterSequence !== null) {
             $condition['afterSequence'] = $this->afterSequence;

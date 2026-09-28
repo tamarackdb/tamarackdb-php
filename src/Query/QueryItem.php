@@ -4,18 +4,17 @@ declare(strict_types=1);
 
 namespace TamarackDB\Query;
 
-use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Internal\Tags;
 
 /**
- * One item of a query. An event matches it when its type is any of
- * $types (every type when empty), and it carries every one of
- * $identifiers and $metadata.
+ * One item of a query: the filters given to one Query constructor or
+ * or() call. An event matches it when its type is any of $types (every
+ * type when empty), and it carries every one of $identifiers and
+ * $metadata.
  *
- * Identifiers and metadata are given as name => value, or
- * name => list of values: the event must carry each value.
- *
- *     new QueryItem(types: ['user-created'], identifiers: ['userId' => '123'])
+ * Identifiers and metadata are in compact form, as on Event: a name with
+ * one value maps to a string, a name with several values to a list, and
+ * the event must carry each value.
  */
 final readonly class QueryItem
 {
@@ -28,25 +27,19 @@ final readonly class QueryItem
     /** @var array<string, string|list<string>> */
     public array $metadata;
 
-    /**
-     * @param list<string> $types
-     * @param array<string, string|list<string>> $identifiers
-     * @param array<string, string|list<string>> $metadata
-     */
-    public function __construct(array $types = [], array $identifiers = [], array $metadata = [])
+    public function __construct(EventType|Identifier|Metadata $filter, EventType|Identifier|Metadata ...$filters)
     {
-        foreach ($types as $type) {
-            if (!\is_string($type) || $type === '') {
-                throw new InvalidArgumentException('a query item type must be a non-empty string');
-            }
-        }
-        $this->types = array_values($types);
-        $this->identifiers = Tags::normalize($identifiers, 'identifier');
-        $this->metadata = Tags::normalize($metadata, 'metadata');
+        [$this->types, $this->identifiers, $this->metadata] = self::merge([], [], [], [$filter, ...$filters]);
+    }
 
-        if ($this->types === [] && $this->identifiers === [] && $this->metadata === []) {
-            throw new InvalidArgumentException('a query item needs at least one type, identifier, or metadata value; use Query::all() to match every event');
-        }
+    /**
+     * Returns a copy of this item with more filters.
+     */
+    public function with(EventType|Identifier|Metadata $filter, EventType|Identifier|Metadata ...$filters): self
+    {
+        [$types, $identifiers, $metadata] = self::merge($this->types, $this->identifiers, $this->metadata, [$filter, ...$filters]);
+
+        return clone($this, ['types' => $types, 'identifiers' => $identifiers, 'metadata' => $metadata]);
     }
 
     /**
@@ -66,5 +59,26 @@ final readonly class QueryItem
         }
 
         return $item;
+    }
+
+    /**
+     * @param list<string> $types
+     * @param array<string, string|list<string>> $identifiers
+     * @param array<string, string|list<string>> $metadata
+     * @param array<EventType|Identifier|Metadata> $filters
+     *
+     * @return array{list<string>, array<string, string|list<string>>, array<string, string|list<string>>}
+     */
+    private static function merge(array $types, array $identifiers, array $metadata, array $filters): array
+    {
+        foreach ($filters as $filter) {
+            match (true) {
+                $filter instanceof EventType => $types = array_values(array_unique([...$types, ...$filter->types])),
+                $filter instanceof Identifier => $identifiers = Tags::add($identifiers, $filter->name, $filter->value),
+                $filter instanceof Metadata => $metadata = Tags::add($metadata, $filter->name, $filter->value),
+            };
+        }
+
+        return [$types, $identifiers, $metadata];
     }
 }

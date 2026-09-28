@@ -46,12 +46,12 @@ and every call until `commit()` or `rollback()` runs inside it.
 ```php
 use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Query;
-use TamarackDB\Query\QueryItem;
 
 $client->beginTransaction();
 try {
-    $query = Query::of(new QueryItem(identifiers: ['userId' => $userId]));
+    $query = new Query(Identifier::is('userId', $userId));
 
     $last = null;
     foreach ($client->readEvents($query) as $event) {
@@ -89,10 +89,10 @@ can still call `rollback()`.
 ## Reading events
 
 `readEvents()` returns a generator. It fetches pages as you consume it, and
-follows `hasMore` on its own:
+follows `hasMore` on its own. Pass `null` to read every event:
 
 ```php
-foreach ($client->readEvents(Query::all()) as $event) {
+foreach ($client->readEvents(null) as $event) {
     $event->sequence;               // int
     $event->time;                   // DateTimeImmutable, UTC
     $event->type;                   // string
@@ -116,10 +116,18 @@ them the same way.
 It takes these filters:
 
 ```php
+use TamarackDB\Query\EventType;
+use TamarackDB\Query\Identifier;
+use TamarackDB\Query\Metadata;
+use TamarackDB\Query\Query;
+
 $client->readEvents(
-    Query::of(
-        new QueryItem(types: ['user-created', 'user-updated'], identifiers: ['userId' => '123']),
-        new QueryItem(types: ['some-other-event']),
+    new Query(
+        EventType::in('user-created', 'user-updated'),
+        Identifier::is('userId', '123'),
+    )->or(
+        EventType::in('some-other-event'),
+        Metadata::is('tenantId', 'acme'),
     ),
     afterSequence: 12345,
     from: new DateTimeImmutable('2026-01-01'),
@@ -128,9 +136,11 @@ $client->readEvents(
 );
 ```
 
-Items are combined with OR. Within an item, `types` is an OR, and
-`identifiers` and `metadata` are ANDs. A value given as a list,
-`['courseId' => ['a', 'b']]`, requires each of them.
+The filters given together form one item, and an event must match all of
+them. `or()` adds another item, and an event matching any item matches the
+query. Within `EventType::in()`, any of the types matches. Give
+`Identifier::is()` or `Metadata::is()` twice with the same name to require
+both values. A query can't be empty: pass `null` to read every event.
 
 When a page without a ticket is cut short, the generator resumes it after
 the last event it received, so no event is skipped or repeated. To follow
@@ -160,6 +170,9 @@ A call carries at most 100 events.
 `new AppendCondition($query, $afterSequence)` makes the append fail with a
 `ConcurrencyException` when an event matching `$query` exists after
 `$afterSequence`. The transaction is then rolled back.
+
+Both are optional. Without a query, any event after `$afterSequence` fails
+the append. Without `$afterSequence`, any event matching `$query` does.
 
 ## Projections
 
@@ -204,7 +217,7 @@ needs:
 $client->pause();                              // waits for queued transactions
 $client->deleteProjectionsByType('user-profile'); // or deleteAllProjections()
 
-foreach ($client->readEvents(Query::all()) as $event) {
+foreach ($client->readEvents(null) as $event) {
     // run your projectors, and every so often:
     // $client->writeProjections($writes);     // outside a transaction: commits on its own
 }
@@ -269,6 +282,9 @@ $client->addMiddleware(new Upcaster());
 - Append middlewares wrap `appendEvents()`, and read middlewares wrap
   `readEvents()`. `$request->ticket` is null outside a transaction.
   `ReadRequest` has `with*()` methods to change the request.
+- `$request->query` is null for a read of every event. To add a filter to
+  every item of a query, use `map()` and `with()`:
+  `$query->map(fn (QueryItem $item) => $item->with(Metadata::is('tenantId', 'acme')))`.
 - Pagination happens below every middleware: a read middleware sees one
   continuous stream of events.
 

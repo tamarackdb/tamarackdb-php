@@ -13,7 +13,6 @@ use TamarackDB\Middleware\AppendMiddleware;
 use TamarackDB\Middleware\ReadHandler;
 use TamarackDB\Middleware\ReadMiddleware;
 use TamarackDB\Middleware\ReadRequest;
-use TamarackDB\Query\Query;
 
 final class MiddlewareTest extends TestCase
 {
@@ -46,7 +45,7 @@ final class MiddlewareTest extends TestCase
         ));
         $client->commit();
 
-        $events = iterator_to_array($client->readEvents(Query::all(), pageSize: 7), false);
+        $events = iterator_to_array($client->readEvents(null, pageSize: 7), false);
         self::assertCount(30, $events);
         self::assertSame('USER-CREATED', $events[0]->type);
         self::assertSame(['tenantId' => 'acme'], $events[29]->metadata);
@@ -54,11 +53,11 @@ final class MiddlewareTest extends TestCase
         // Stopping a read through the chain still drains the page, so the
         // transaction survives.
         $client->beginTransaction();
-        foreach ($client->readEvents(Query::all(), pageSize: 20) as $event) {
+        foreach ($client->readEvents(null, pageSize: 20) as $event) {
             break;
         }
         $client->appendEvents([new NewEvent('user-created')]);
         $client->commit();
-        self::assertCount(31, iterator_to_array($client->readEvents(Query::all()), false));
+        self::assertCount(31, iterator_to_array($client->readEvents(null), false));
     }
 }

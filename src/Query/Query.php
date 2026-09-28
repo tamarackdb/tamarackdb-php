@@ -4,55 +4,56 @@ declare(strict_types=1);
 
 namespace TamarackDB\Query;
 
-use TamarackDB\Exception\InvalidArgumentException;
-
 /**
- * Which events to read, or to check in an Append Condition: every event,
- * or the events matching any of its items.
+ * Which events to read, or to check in an Append Condition. The filters
+ * given together form one item and must all match; or() adds another
+ * item, and an event matching any item matches the query.
  *
- *     Query::all()
- *     Query::of(
- *         new QueryItem(types: ['user-created', 'user-updated'], identifiers: ['userId' => '123']),
- *         new QueryItem(types: ['some-other-event']),
+ *     new Query(
+ *         EventType::in('user-created', 'user-updated'),
+ *         Identifier::is('userId', '123'),
+ *     )->or(
+ *         EventType::in('some-other-event'),
  *     )
+ *
+ * To match every event, pass null instead of a Query.
  */
 final readonly class Query
 {
+    /** @var non-empty-list<QueryItem> */
+    public array $items;
+
+    public function __construct(EventType|Identifier|Metadata $filter, EventType|Identifier|Metadata ...$filters)
+    {
+        $this->items = [new QueryItem($filter, ...$filters)];
+    }
+
     /**
-     * @param list<QueryItem>|null $items null matches every event
+     * Returns a copy of this query with one more item.
      */
-    private function __construct(public ?array $items) {}
-
-    public static function all(): self
+    public function or(EventType|Identifier|Metadata $filter, EventType|Identifier|Metadata ...$filters): self
     {
-        return new self(null);
-    }
-
-    public static function of(QueryItem ...$items): self
-    {
-        if ($items === []) {
-            throw new InvalidArgumentException('a query needs at least one item; use Query::all() to match every event');
-        }
-
-        return new self(array_values($items));
-    }
-
-    public function isAll(): bool
-    {
-        return $this->items === null;
+        return clone($this, ['items' => [...$this->items, new QueryItem($filter, ...$filters)]]);
     }
 
     /**
-     * The query's JSON value: "*", or the list of its items.
+     * Returns a copy of this query with $map applied to each item. A read
+     * middleware can use it to add a filter to every item:
      *
-     * @return string|list<array<string, mixed>>
+     *     $query->map(fn (QueryItem $item) => $item->with(Metadata::is('tenantId', 'acme')))
+     *
+     * @param callable(QueryItem): QueryItem $map
      */
-    public function toJsonValue(): string|array
+    public function map(callable $map): self
     {
-        if ($this->items === null) {
-            return '*';
-        }
+        return clone($this, ['items' => array_map($map, $this->items)]);
+    }
 
+    /**
+     * @return non-empty-list<array<string, mixed>>
+     */
+    public function toArray(): array
+    {
         return array_map(static fn(QueryItem $item): array => $item->toArray(), $this->items);
     }
 }
