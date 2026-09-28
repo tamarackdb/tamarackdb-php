@@ -98,11 +98,15 @@ foreach ($client->readEvents(Query::all()) as $event) {
     $event->sequence;               // int
     $event->time;                   // DateTimeImmutable, UTC
     $event->type;                   // string
-    $event->identifiers;            // ['userId' => ['123']]
-    $event->metadata;               // ['tenantId' => ['acme']]
+    $event->identifiers;            // ['userId' => '123', 'courseId' => ['a', 'b']]
+    $event->metadata;               // ['tenantId' => 'acme']
     $event->payload;                // string, exactly as appended
 }
 ```
+
+In `identifiers` and `metadata`, a name with one value maps to a string,
+a name with several values to a list. `NewEvent` and `QueryItem` expose
+them the same way.
 
 - `Client::readEvents()` reads committed events only, and never waits for
   the active transaction. Use it to display data, for a projection rebuild,
@@ -252,7 +256,7 @@ final class TenantMetadata implements AppendMiddleware
     public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
     {
         $events = array_map(fn (NewEvent $e) => new NewEvent(
-            $e->type, $e->identifiers, $e->metadata + ['tenantId' => [$this->tenantId]], $e->payload,
+            $e->type, $e->identifiers, $e->metadata + ['tenantId' => $this->tenantId], $e->payload,
         ), $events);
 
         return $next->append($events, $condition, $ticket);

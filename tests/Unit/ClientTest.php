@@ -80,8 +80,8 @@ final class ClientTest extends TestCase
         self::assertSame(7, $event->sequence);
         self::assertSame('2026-09-01T14:23:05.123456+00:00', $event->time->format('Y-m-d\TH:i:s.uP'));
         self::assertSame('user-created', $event->type);
-        self::assertSame(['userId' => ['7'], 'tag' => ['a', 'b']], $event->identifiers);
-        self::assertSame(['tenantId' => ['acme']], $event->metadata);
+        self::assertSame(['userId' => '7', 'tag' => ['a', 'b']], $event->identifiers);
+        self::assertSame(['tenantId' => 'acme'], $event->metadata);
         self::assertSame('payload-7', $event->payload);
     }
 

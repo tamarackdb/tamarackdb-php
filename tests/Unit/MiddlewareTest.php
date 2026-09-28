@@ -41,7 +41,7 @@ final class MiddlewareTest extends TestCase
             public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
             {
                 $events = array_map(
-                    static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['ticket' => [$ticket]], $e->payload),
+                    static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['ticket' => $ticket], $e->payload),
                     $events,
                 );
 

@@ -19,10 +19,10 @@ use TamarackDB\Internal\Tags;
  */
 final readonly class NewEvent
 {
-    /** @var array<string, list<string>> */
+    /** @var array<string, string|list<string>> */
     public array $identifiers;
 
-    /** @var array<string, list<string>> */
+    /** @var array<string, string|list<string>> */
     public array $metadata;
 
     /**
@@ -49,10 +49,10 @@ final readonly class NewEvent
     {
         $event = ['type' => $this->type];
         if ($this->identifiers !== []) {
-            $event['identifiers'] = Tags::toCompact($this->identifiers);
+            $event['identifiers'] = $this->identifiers;
         }
         if ($this->metadata !== []) {
-            $event['metadata'] = Tags::toCompact($this->metadata);
+            $event['metadata'] = $this->metadata;
         }
         $event['payload'] = $this->payload;
 

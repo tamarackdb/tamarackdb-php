@@ -14,21 +14,33 @@ use TamarackDB\Internal\Time;
  *
  * $time is when TamarackDB appended the event, in UTC. Only $sequence
  * defines the order of events.
+ *
+ * A name with one identifier or metadata value maps to a string, a name
+ * with several values to a list.
  */
 final readonly class Event
 {
+    /** @var array<string, string|list<string>> */
+    public array $identifiers;
+
+    /** @var array<string, string|list<string>> */
+    public array $metadata;
+
     /**
-     * @param array<string, list<string>> $identifiers
-     * @param array<string, list<string>> $metadata
+     * @param array<string, string|list<string>> $identifiers
+     * @param array<string, string|list<string>> $metadata
      */
     public function __construct(
         public int $sequence,
         public \DateTimeImmutable $time,
         public string $type,
-        public array $identifiers,
-        public array $metadata,
+        array $identifiers,
+        array $metadata,
         public string $payload,
-    ) {}
+    ) {
+        $this->identifiers = Tags::normalize($identifiers, 'identifier');
+        $this->metadata = Tags::normalize($metadata, 'metadata');
+    }
 
     /**
      * @param array<string, mixed> $data one event line of a QUERY /events response

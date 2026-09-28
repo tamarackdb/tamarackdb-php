@@ -6,6 +6,7 @@ namespace TamarackDB\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use TamarackDB\Event\AppendCondition;
+use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Query\Query;
@@ -66,7 +67,16 @@ final class QueryTest extends TestCase
             'identifiers' => ['userId' => '123', 'tag' => ['a', 'b']],
             'payload' => '{"name":"Ada"}',
         ], $event->toArray());
-        self::assertSame(['userId' => ['123'], 'tag' => ['a', 'b']], $event->identifiers);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], $event->identifiers);
+    }
+
+    public function testASingleValueListBecomesAString(): void
+    {
+        $tags = ['userId' => ['123'], 'tag' => ['a', 'b']];
+
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new NewEvent('a', $tags, $tags))->metadata);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new QueryItem(identifiers: $tags))->identifiers);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new Event(1, new \DateTimeImmutable(), 'a', $tags, [], ''))->identifiers);
     }
 
     public function testNewEventNeedsAType(): void

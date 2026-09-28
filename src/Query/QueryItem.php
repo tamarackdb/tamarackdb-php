@@ -22,10 +22,10 @@ final readonly class QueryItem
     /** @var list<string> */
     public array $types;
 
-    /** @var array<string, list<string>> */
+    /** @var array<string, string|list<string>> */
     public array $identifiers;
 
-    /** @var array<string, list<string>> */
+    /** @var array<string, string|list<string>> */
     public array $metadata;
 
     /**

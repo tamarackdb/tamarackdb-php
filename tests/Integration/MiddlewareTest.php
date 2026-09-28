@@ -27,7 +27,7 @@ final class MiddlewareTest extends TestCase
             public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
             {
                 return $next->append(array_map(
-                    static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['tenantId' => ['acme']], $e->payload),
+                    static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['tenantId' => 'acme'], $e->payload),
                     $events,
                 ), $condition, $ticket);
             }
@@ -48,7 +48,7 @@ final class MiddlewareTest extends TestCase
         $events = iterator_to_array($client->readEvents(Query::all(), pageSize: 7), false);
         self::assertCount(30, $events);
         self::assertSame('USER-CREATED', $events[0]->type);
-        self::assertSame(['tenantId' => ['acme']], $events[29]->metadata);
+        self::assertSame(['tenantId' => 'acme'], $events[29]->metadata);
 
         // Stopping a read through the chain still drains the page, so the
         // transaction survives.

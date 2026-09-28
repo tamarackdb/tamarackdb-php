@@ -53,8 +53,8 @@ final class ClientTest extends TestCase
         self::assertCount(2, $events);
         self::assertSame(1, $events[0]->sequence);
         self::assertSame('user-created', $events[0]->type);
-        self::assertSame(['courseId' => ['a', 'b'], 'userId' => ['123']], $events[0]->identifiers);
-        self::assertSame(['tenantId' => ['acme']], $events[0]->metadata);
+        self::assertSame(['courseId' => ['a', 'b'], 'userId' => '123'], $events[0]->identifiers);
+        self::assertSame(['tenantId' => 'acme'], $events[0]->metadata);
         self::assertSame('{"name":"Ada"}', $events[0]->payload);
         self::assertEquals($appended[0]->time, $events[0]->time);
         self::assertSame([], $events[1]->metadata);
