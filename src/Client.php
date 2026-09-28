@@ -218,7 +218,7 @@ final class Client
     {
         $ticket = $this->requireTicket();
 
-        return $this->run($ticket, fn(): array => $this->appendHandler->append($events, $condition, $ticket));
+        return $this->run($ticket, fn(): array => $this->appendHandler->appendEvents($events, $condition, $ticket));
     }
 
     /**

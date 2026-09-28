@@ -120,7 +120,7 @@ final class Api implements AppendHandler, ReadHandler
     /**
      * The innermost layer of the append chain.
      */
-    public function append(array $events, ?AppendCondition $condition, string $ticket): array
+    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket): array
     {
         $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), array_values($events))];
         if ($condition !== null && ($array = $condition->toArray()) !== []) {

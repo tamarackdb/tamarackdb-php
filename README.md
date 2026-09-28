@@ -231,13 +231,13 @@ final class TenantMetadata implements AppendMiddleware
 {
     public function __construct(private string $tenantId) {}
 
-    public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
     {
         $events = array_map(fn (NewEvent $e) => new NewEvent(
             $e->type, $e->identifiers, $e->metadata + ['tenantId' => $this->tenantId], $e->payload,
         ), $events);
 
-        return $next->append($events, $condition, $ticket);
+        return $next->appendEvents($events, $condition, $ticket);
     }
 }
 ```

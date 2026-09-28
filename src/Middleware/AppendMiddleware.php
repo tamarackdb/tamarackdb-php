@@ -22,5 +22,5 @@ interface AppendMiddleware
      *
      * @return list<AppendedEvent>
      */
-    public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array;
+    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array;
 }

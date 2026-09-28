@@ -21,8 +21,8 @@ final readonly class AppendDelegator implements AppendHandler
         private AppendHandler $next,
     ) {}
 
-    public function append(array $events, ?AppendCondition $condition, string $ticket): array
+    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket): array
     {
-        return $this->middleware->append($events, $condition, $ticket, $this->next);
+        return $this->middleware->appendEvents($events, $condition, $ticket, $this->next);
     }
 }

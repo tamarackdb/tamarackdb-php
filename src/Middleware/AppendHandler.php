@@ -19,5 +19,5 @@ interface AppendHandler
      *
      * @return list<AppendedEvent>
      */
-    public function append(array $events, ?AppendCondition $condition, string $ticket): array;
+    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket): array;
 }

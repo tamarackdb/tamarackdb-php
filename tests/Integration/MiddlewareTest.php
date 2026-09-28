@@ -23,9 +23,9 @@ final class MiddlewareTest extends TestCase
         $client->resume();
         $client->reset();
         $client->addMiddleware(new class implements AppendMiddleware, ReadMiddleware {
-            public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+            public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
             {
-                return $next->append(array_map(
+                return $next->appendEvents(array_map(
                     static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['tenantId' => 'acme'], $e->payload),
                     $events,
                 ), $condition, $ticket);

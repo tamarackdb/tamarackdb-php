@@ -38,14 +38,14 @@ final class MiddlewareTest extends TestCase
     public function testAnAppendMiddlewareChangesTheEvents(): void
     {
         $this->client->addMiddleware(new class implements AppendMiddleware {
-            public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+            public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
             {
                 $events = array_map(
                     static fn(NewEvent $e): NewEvent => new NewEvent($e->type, $e->identifiers, $e->metadata + ['ticket' => $ticket], $e->payload),
                     $events,
                 );
 
-                return $next->append($events, $condition, $ticket);
+                return $next->appendEvents($events, $condition, $ticket);
             }
         });
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
@@ -165,10 +165,10 @@ final class MiddlewareTest extends TestCase
             /** @param \ArrayObject<int, string> $calls */
             public function __construct(private string $name, private \ArrayObject $calls) {}
 
-            public function append(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+            public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
             {
                 $this->calls->append($this->name . ' append before');
-                $appended = $next->append($events, $condition, $ticket);
+                $appended = $next->appendEvents($events, $condition, $ticket);
                 $this->calls->append($this->name . ' append after');
 
                 return $appended;
