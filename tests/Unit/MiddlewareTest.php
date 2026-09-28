@@ -82,6 +82,62 @@ final class MiddlewareTest extends TestCase
         );
     }
 
+    public function testAnInnerMiddlewareRunsLast(): void
+    {
+        $this->client->addMiddleware($this->recorder('first'));
+        $this->client->addInnerMiddleware($this->recorder('inner'));
+        $this->client->addMiddleware($this->recorder('outer'));
+        $this->transport->push(
+            Responses::json(['ticket' => self::TICKET]),
+            Responses::json(['events' => []]),
+            Responses::page([], false),
+        );
+
+        $this->client->beginTransaction();
+        $this->client->appendEvents([]);
+        iterator_to_array($this->client->readEvents(null));
+
+        self::assertSame(
+            [
+                'outer append before', 'first append before', 'inner append before',
+                'inner append after', 'first append after', 'outer append after',
+                'outer read', 'first read', 'inner read',
+            ],
+            $this->calls->getArrayCopy(),
+        );
+    }
+
+    public function testAnInnerMiddlewareSeesWhatIsSent(): void
+    {
+        /** @var \ArrayObject<int, NewEvent> $sent */
+        $sent = new \ArrayObject();
+        $this->client->addInnerMiddleware(new class ($sent) implements AppendMiddleware {
+            /** @param \ArrayObject<int, NewEvent> $sent */
+            public function __construct(private \ArrayObject $sent) {}
+
+            public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+            {
+                foreach ($events as $event) {
+                    $this->sent->append($event);
+                }
+
+                return $next->appendEvents($events, $condition, $ticket);
+            }
+        });
+        $this->client->addMiddleware(new class implements AppendMiddleware {
+            public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
+            {
+                return $next->appendEvents([new NewEvent('replaced')], $condition, $ticket);
+            }
+        });
+        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
+
+        $this->client->beginTransaction();
+        $this->client->appendEvents([new NewEvent('original')]);
+
+        self::assertSame(['replaced'], array_map(static fn(NewEvent $e): string => $e->type, $sent->getArrayCopy()));
+    }
+
     public function testAReadMiddlewareChangesTheEvents(): void
     {
         $this->client->addMiddleware(new class implements ReadMiddleware {

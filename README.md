@@ -278,6 +278,10 @@ $client->addMiddleware(new Upcaster());
 ```
 
 - The last middleware added is the outermost layer: it runs first.
+- `addInnerMiddleware()` adds a middleware as the innermost layer, closest
+  to the server, whatever the order of the other calls. It sees events
+  exactly as they are sent and received. Use it for a tool that must record
+  what goes over the wire, such as a test recorder.
 - A class implementing both interfaces wraps both appends and reads.
 - Append middlewares wrap `appendEvents()`, and read middlewares wrap
   `readEvents()`. `$request->ticket` is null outside a transaction.

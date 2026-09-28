@@ -47,6 +47,9 @@ final class Client
 
     private ReadHandler $readHandler;
 
+    /** @var list<AppendMiddleware|ReadMiddleware> innermost first */
+    private array $middlewares = [];
+
     private ?string $ticket = null;
 
     /**
@@ -101,12 +104,19 @@ final class Client
      */
     public function addMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
     {
-        if ($middleware instanceof AppendMiddleware) {
-            $this->appendHandler = new AppendDelegator($middleware, $this->appendHandler);
-        }
-        if ($middleware instanceof ReadMiddleware) {
-            $this->readHandler = new ReadDelegator($middleware, $this->readHandler);
-        }
+        $this->middlewares[] = $middleware;
+        $this->chainMiddlewares();
+    }
+
+    /**
+     * Adds a middleware as the innermost layer, closest to the server,
+     * whatever was added before or is added after with addMiddleware(). It
+     * sees events exactly as they are sent and received.
+     */
+    public function addInnerMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
+    {
+        array_unshift($this->middlewares, $middleware);
+        $this->chainMiddlewares();
     }
 
     /**
@@ -361,6 +371,20 @@ final class Client
     {
         if ($this->ticket === $ticket) {
             $this->ticket = null;
+        }
+    }
+
+    private function chainMiddlewares(): void
+    {
+        $this->appendHandler = $this->api;
+        $this->readHandler = $this->api;
+        foreach ($this->middlewares as $middleware) {
+            if ($middleware instanceof AppendMiddleware) {
+                $this->appendHandler = new AppendDelegator($middleware, $this->appendHandler);
+            }
+            if ($middleware instanceof ReadMiddleware) {
+                $this->readHandler = new ReadDelegator($middleware, $this->readHandler);
+            }
         }
     }
 
