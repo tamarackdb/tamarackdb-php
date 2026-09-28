@@ -177,7 +177,7 @@ final class ClientTest extends TestCase
         $this->transport->push(Responses::json(['create' => [['version' => 'c1']], 'replace' => [['version' => 'r1']]]));
 
         $result = $this->client->writeProjections(
-            (new ProjectionWrites())
+            new ProjectionWrites()
                 ->create('a', '1', 'x')
                 ->replace('a', '2', 'v2', 'y')
                 ->delete('a', '3', 'v3'),
@@ -195,7 +195,7 @@ final class ClientTest extends TestCase
     public function testProjectionWritesRejectARepeatedKey(): void
     {
         $this->expectExceptionMessage('delete[0] has the same type and id as create[0]');
-        (new ProjectionWrites())->create('a', '1', 'x')->delete('a', '1', 'v');
+        new ProjectionWrites()->create('a', '1', 'x')->delete('a', '1', 'v');
     }
 
     public function testRebuildCalls(): void

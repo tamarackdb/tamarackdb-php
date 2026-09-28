@@ -74,9 +74,9 @@ final class QueryTest extends TestCase
     {
         $tags = ['userId' => ['123'], 'tag' => ['a', 'b']];
 
-        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new NewEvent('a', $tags, $tags))->metadata);
-        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new QueryItem(identifiers: $tags))->identifiers);
-        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], (new Event(1, new \DateTimeImmutable(), 'a', $tags, [], ''))->identifiers);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new NewEvent('a', $tags, $tags)->metadata);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new QueryItem(identifiers: $tags)->identifiers);
+        self::assertSame(['userId' => '123', 'tag' => ['a', 'b']], new Event(1, new \DateTimeImmutable(), 'a', $tags, [], '')->identifiers);
     }
 
     public function testNewEventNeedsAType(): void
@@ -87,11 +87,11 @@ final class QueryTest extends TestCase
 
     public function testAppendConditionLeavesOutWhatIsNotSet(): void
     {
-        self::assertSame([], (new AppendCondition())->toArray());
-        self::assertSame(['afterSequence' => 0], (new AppendCondition(afterSequence: 0))->toArray());
+        self::assertSame([], new AppendCondition()->toArray());
+        self::assertSame(['afterSequence' => 0], new AppendCondition(afterSequence: 0)->toArray());
         self::assertSame(
             ['failIfEventsMatch' => '*', 'afterSequence' => 12],
-            (new AppendCondition(Query::all(), 12))->toArray(),
+            new AppendCondition(Query::all(), 12)->toArray(),
         );
     }
 }

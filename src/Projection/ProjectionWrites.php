@@ -12,7 +12,7 @@ use TamarackDB\Exception\InvalidArgumentException;
  * Collect every change your event handlers make, then send them in one
  * call right before the commit.
  *
- *     $writes = (new ProjectionWrites())
+ *     $writes = new ProjectionWrites()
  *         ->create('user-list-entry', '789', '{"name":"Grace"}')
  *         ->replace('user-profile', '123', $profile->version, '{"name":"Ada Lovelace"}')
  *         ->delete('user-list-entry', '456', $entry->version);

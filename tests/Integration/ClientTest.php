@@ -173,7 +173,7 @@ final class ClientTest extends TestCase
             self::assertNull($tx->getProjection('user-profile', $id));
             self::assertTrue($tx->isActive());
 
-            return $tx->writeProjections((new ProjectionWrites())->create('user-profile', $id, '{"v":1}'))->createVersions[0];
+            return $tx->writeProjections(new ProjectionWrites()->create('user-profile', $id, '{"v":1}'))->createVersions[0];
         });
 
         $projection = $this->client->getProjection('user-profile', $id);
@@ -185,21 +185,21 @@ final class ClientTest extends TestCase
             $current = $tx->getProjection('user-profile', $id);
             self::assertNotNull($current);
 
-            return $tx->writeProjections((new ProjectionWrites())->replace('user-profile', $id, $current->version, ''))->replaceVersions[0];
+            return $tx->writeProjections(new ProjectionWrites()->replace('user-profile', $id, $current->version, ''))->replaceVersions[0];
         });
         self::assertNotSame($created, $replaced);
         self::assertSame('', $this->client->getProjection('user-profile', $id)?->payload);
 
         try {
             $this->client->transactional(
-                static fn(Transaction $tx) => $tx->writeProjections((new ProjectionWrites())->delete('user-profile', $id, $created)),
+                static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $created)),
             );
             self::fail('expected a ConcurrencyException');
         } catch (ConcurrencyException) {
         }
 
         $this->client->transactional(
-            static fn(Transaction $tx) => $tx->writeProjections((new ProjectionWrites())->delete('user-profile', $id, $replaced)),
+            static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->delete('user-profile', $id, $replaced)),
         );
         self::assertNull($this->client->getProjection('user-profile', $id));
     }
@@ -207,7 +207,7 @@ final class ClientTest extends TestCase
     public function testRebuild(): void
     {
         $this->client->transactional(
-            static fn(Transaction $tx) => $tx->writeProjections((new ProjectionWrites())->create('a', '1', 'x')->create('b', '1', 'y')),
+            static fn(Transaction $tx) => $tx->writeProjections(new ProjectionWrites()->create('a', '1', 'x')->create('b', '1', 'y')),
         );
 
         try {
@@ -229,8 +229,8 @@ final class ClientTest extends TestCase
         self::assertNotNull($this->client->getProjection('b', '1'));
 
         $this->client->deleteAllProjections();
-        $version = $this->client->writeProjections((new ProjectionWrites())->create('a', '1', 'rebuilt'))->createVersions[0];
-        $this->client->writeProjections((new ProjectionWrites())->replace('a', '1', $version, 'rebuilt again'));
+        $version = $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'rebuilt'))->createVersions[0];
+        $this->client->writeProjections(new ProjectionWrites()->replace('a', '1', $version, 'rebuilt again'));
         $this->client->resume();
 
         self::assertSame('rebuilt again', $this->client->getProjection('a', '1')?->payload);

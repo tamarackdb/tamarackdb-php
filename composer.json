@@ -6,7 +6,7 @@
     "keywords": ["tamarackdb", "event store", "event sourcing", "dcb"],
     "homepage": "https://tamarackdb.github.io/",
     "require": {
-        "php": "^8.3",
+        "php": "^8.4",
         "ext-curl": "*",
         "ext-json": "*"
     },

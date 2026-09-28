@@ -19,7 +19,7 @@ it when the client moves to a new server version.
 
 ## Code conventions
 
-- PHP 8.3 minimum. Every file starts with `declare(strict_types=1);`.
+- PHP 8.4 minimum. Every file starts with `declare(strict_types=1);`.
 - Value objects are `final readonly class`. Other classes are `final`.
 - No runtime dependency beyond `ext-curl` and `ext-json`. Dev tools only in
   `require-dev`.
