@@ -12,8 +12,6 @@ use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
-use TamarackDB\Exception\NotPausedException;
-use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\TicketNotActiveException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Projection\ProjectionWrites;
@@ -28,7 +26,6 @@ final class ClientTest extends TestCase
     protected function setUp(): void
     {
         $this->client = TestServer::get($this)->client();
-        $this->client->resume();
         $this->client->reset();
     }
 
@@ -37,7 +34,6 @@ final class ClientTest extends TestCase
         $health = $this->client->health();
 
         self::assertSame('ok', $health->status);
-        self::assertFalse($health->paused);
     }
 
     public function testCommittedEventsAreRead(): void
@@ -198,20 +194,6 @@ final class ClientTest extends TestCase
         $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x')->create('b', '1', 'y'));
         $this->client->commit();
 
-        try {
-            $this->client->deleteAllProjections();
-            self::fail('expected a NotPausedException');
-        } catch (NotPausedException) {
-        }
-
-        $this->client->pause();
-        self::assertTrue($this->client->health()->paused);
-        try {
-            $this->client->beginTransaction();
-            self::fail('expected a PausedException');
-        } catch (PausedException) {
-        }
-
         $this->client->deleteProjectionsByType('a');
         self::assertNull($this->client->getProjection('a', '1'));
         self::assertNotNull($this->client->getProjection('b', '1'));
@@ -219,16 +201,31 @@ final class ClientTest extends TestCase
         $this->client->deleteAllProjections();
         $version = $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'rebuilt'))->createVersions[0];
         $this->client->writeProjections(new ProjectionWrites()->replace('a', '1', $version, 'rebuilt again'));
-        $this->client->resume();
 
         self::assertSame('rebuilt again', $this->client->getProjection('a', '1')?->payload);
-        self::assertFalse($this->client->health()->paused);
     }
 
-    public function testBeginTransactionGivesUpAfterTheQueueTimeout(): void
+    public function testAWriteWithoutTransactionWaitsForTheActiveOne(): void
     {
         $this->client->beginTransaction();
-        $impatient = TestServer::get($this)->client(queueTimeout: 0.3);
+        $impatient = TestServer::get($this)->client(timeout: 0.3);
+
+        $started = microtime(true);
+        try {
+            $impatient->deleteAllProjections();
+            self::fail('expected a TimeoutException');
+        } catch (TimeoutException) {
+            self::assertLessThan(2.0, microtime(true) - $started);
+        }
+
+        $this->client->rollback();
+        $impatient->deleteAllProjections();
+    }
+
+    public function testBeginTransactionGivesUpAfterTheTimeout(): void
+    {
+        $this->client->beginTransaction();
+        $impatient = TestServer::get($this)->client(timeout: 0.3);
 
         $started = microtime(true);
         try {

@@ -48,10 +48,10 @@ final class Api implements AppendHandler, ReadHandler
      *
      * @param array<string, mixed>|null $json
      */
-    public function call(string $method, string $path, ?string $ticket = null, ?array $json = null, ?float $timeout = null): Response
+    public function call(string $method, string $path, ?string $ticket = null, ?array $json = null): Response
     {
         $body = $json === null ? null : Json::encode($json);
-        $response = $this->transport->send($method, $path, $this->headers($ticket, $body !== null), $body, $timeout);
+        $response = $this->transport->send($method, $path, $this->headers($ticket, $body !== null), $body);
         if ($response->statusCode >= 400) {
             throw ServerException::fromResponse($response);
         }

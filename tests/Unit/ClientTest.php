@@ -12,7 +12,6 @@ use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
-use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\TicketNotActiveException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
@@ -34,10 +33,10 @@ final class ClientTest extends TestCase
     protected function setUp(): void
     {
         $this->transport = new FakeTransport();
-        $this->client = new Client($this->transport, queueTimeout: 2.5);
+        $this->client = new Client($this->transport);
     }
 
-    public function testBeginTransactionWaitsForTheQueueTimeout(): void
+    public function testBeginTransaction(): void
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]));
 
@@ -47,20 +46,6 @@ final class ClientTest extends TestCase
         self::assertTrue($this->client->inTransaction());
         self::assertSame('POST', $this->transport->requests[0]['method']);
         self::assertSame('/begin', $this->transport->requests[0]['path']);
-        self::assertSame(2.5, $this->transport->requests[0]['timeout']);
-    }
-
-    public function testBeginTransactionWhilePaused(): void
-    {
-        $this->transport->push(Responses::error(503, 'Paused'));
-
-        try {
-            $this->client->beginTransaction();
-            self::fail('expected a PausedException');
-        } catch (PausedException) {
-        }
-
-        self::assertFalse($this->client->inTransaction());
     }
 
     public function testBeginTransactionTwice(): void
@@ -258,28 +243,30 @@ final class ClientTest extends TestCase
 
     public function testRebuildCalls(): void
     {
-        $this->transport->push(Responses::noContent(), Responses::noContent(), Responses::noContent(), Responses::noContent());
+        $this->transport->push(
+            Responses::noContent(),
+            Responses::noContent(),
+            Responses::json(['create' => [['version' => 'c1']]]),
+        );
 
-        $this->client->pause();
         $this->client->deleteProjectionsByType('user/profile');
         $this->client->deleteAllProjections();
-        $this->client->resume();
+        $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x'));
 
         self::assertSame(
-            [['POST', '/pause', 2.5], ['DELETE', '/projections/user%2Fprofile', null], ['DELETE', '/projections', null], ['POST', '/resume', null]],
-            array_map(static fn(array $r): array => [$r['method'], $r['path'], $r['timeout']], $this->transport->requests),
+            [['DELETE', '/projections/user%2Fprofile'], ['DELETE', '/projections'], ['POST', '/projections']],
+            array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
         );
     }
 
     public function testHealth(): void
     {
-        $this->transport->push(Responses::json(['status' => 'ok', 'version' => 'v0.24.0', 'paused' => true]));
+        $this->transport->push(Responses::json(['status' => 'ok', 'version' => 'v0.25.0']));
 
         $health = $this->client->health();
 
         self::assertSame('ok', $health->status);
-        self::assertSame('v0.24.0', $health->version);
-        self::assertTrue($health->paused);
+        self::assertSame('v0.25.0', $health->version);
     }
 
     public function testAppend(): void

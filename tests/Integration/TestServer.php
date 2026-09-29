@@ -50,11 +50,11 @@ final class TestServer
         return self::$servers[$key];
     }
 
-    public function client(?string $token = null, float $queueTimeout = 10.0): Client
+    public function client(?string $token = null, float $timeout = 60.0): Client
     {
         return $this->socket === null
-            ? Client::http($this->url, $token, $queueTimeout)
-            : Client::unixSocket($this->socket, $token, $queueTimeout);
+            ? Client::http($this->url, $token, $timeout)
+            : Client::unixSocket($this->socket, $token, $timeout);
     }
 
     /**

@@ -18,8 +18,6 @@ interface Transport
      * Sends a request and returns its response, whatever its status.
      *
      * @param array<string, string> $headers
-     * @param float|null $timeout seconds to wait for the whole response,
-     *                            or null for the transport's default
      *
      * @throws TransportException when no full response arrived
      */
@@ -28,7 +26,6 @@ interface Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        ?float $timeout = null,
     ): Response;
 
     /**

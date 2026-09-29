@@ -19,7 +19,6 @@ final class MiddlewareTest extends TestCase
     public function testMiddlewaresWrapAppendsAndReads(): void
     {
         $client = TestServer::get($this)->client();
-        $client->resume();
         $client->reset();
         $client->addMiddleware(new class implements AppendMiddleware, ReadMiddleware {
             public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array

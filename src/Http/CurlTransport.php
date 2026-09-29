@@ -34,7 +34,7 @@ final class CurlTransport implements Transport
         string $baseUrl = 'http://127.0.0.1:8085',
         private readonly ?string $unixSocket = null,
         private readonly ?string $token = null,
-        private readonly float $timeout = 30.0,
+        private readonly float $timeout = 60.0,
         private readonly float $connectTimeout = 5.0,
     ) {
         if ($unixSocket === '') {
@@ -51,12 +51,11 @@ final class CurlTransport implements Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        ?float $timeout = null,
     ): Response {
         $responseHeaders = [];
         $ch = $this->handle($method, $path, $headers, $body, $responseHeaders);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT_MS, (int) ceil(($timeout ?? $this->timeout) * 1000));
+        curl_setopt($ch, CURLOPT_TIMEOUT_MS, (int) ceil($this->timeout * 1000));
 
         $result = curl_exec($ch);
         if (!\is_string($result)) {

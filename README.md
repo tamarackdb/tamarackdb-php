@@ -5,7 +5,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 
 It covers the whole integration API: transactions, reading and appending
 events, Append Conditions, projections, and projection rebuilds. It is
-tested against TamarackDB v0.24.0.
+tested against TamarackDB v0.25.0.
 
 ## Requirements
 
@@ -27,12 +27,14 @@ $client = Client::http('http://127.0.0.1:8085');
 $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock');
 
 // With enableAuth on, and your own limits:
-$client = Client::http('http://127.0.0.1:8085', token: 'secret', queueTimeout: 5.0, timeout: 30.0);
+$client = Client::http('http://127.0.0.1:8085', token: 'secret', timeout: 120.0);
 ```
 
-`queueTimeout` is how long `beginTransaction()` and `pause()` wait for their
-turn when another transaction is active (10 seconds by default). Past it,
-they throw a `TimeoutException`. Pick it from how long your end user can wait.
+`timeout` is how long the client waits for a response (60 seconds by
+default). It includes the time a request waits for its turn in the server's
+queue: `beginTransaction()` when another transaction is active, and the
+projection rebuild calls below. Past it, the client throws a
+`TimeoutException`.
 
 ## Handling a command
 
@@ -214,20 +216,20 @@ A rebuild is your application's job. The client gives you the calls it
 needs:
 
 ```php
-$client->pause();                              // waits for queued transactions
 $client->deleteProjectionsByType('user-profile'); // or deleteAllProjections()
 
 foreach ($client->readEvents(null) as $event) {
     // run your projectors, and every so often:
     // $client->writeProjections($writes);     // outside a transaction: commits on its own
 }
-
-$client->resume();
 ```
 
-While paused, `beginTransaction()` throws a `PausedException`. Outside a
-pause, `deleteProjectionsByType()`, `deleteAllProjections()`, and
-`writeProjections()` without a transaction throw a `NotPausedException`.
+`deleteProjectionsByType()`, `deleteAllProjections()`, and
+`writeProjections()` without a transaction wait for their turn in the
+server's queue, then do their work. `timeout` covers both.
+
+The integration guide describes
+[how to run a rebuild](https://tamarackdb.github.io/docs/guides/integration/).
 
 ## Middlewares
 
@@ -305,12 +307,10 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `ConcurrencyException` | 409: an Append Condition failed, or a projection version doesn't match |
 | `InvalidRequestException` | 400: the server rejected the request |
 | `UnauthorizedException` | 401: missing or wrong token |
-| `NotPausedException` | 409: a rebuild call while the server isn't paused |
 | `TicketNotActiveException` | 410: the transaction has already ended on the server |
 | `PayloadTooLargeException` | 413: an event, a projection, or the request is too large |
 | `InternalErrorException` | 500 |
-| `TransactionQueueFullException` | 503: too many requests are waiting for a transaction |
-| `PausedException` | 503: `beginTransaction()` while the server is paused |
+| `TransactionQueueFullException` | 503: too many requests are waiting in the server's queue |
 | `ShuttingDownException` | 503: the server is shutting down |
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
 | `TransactionAlreadyActiveException` | `beginTransaction()` while the client already has a transaction |
@@ -326,7 +326,7 @@ Every server error extends `ServerException`, with `$statusCode`,
 ## Server state
 
 ```php
-$client->health();  // Health { status, version, paused }
+$client->health();  // Health { status, version }
 $client->debug();   // GET /debug, as an array
 $client->reset();   // devMode only: deletes every event and projection
 ```

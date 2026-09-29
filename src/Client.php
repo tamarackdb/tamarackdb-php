@@ -9,7 +9,6 @@ use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\NoActiveTransactionException;
-use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TimeoutException;
@@ -52,14 +51,8 @@ final class Client
 
     private ?string $ticket = null;
 
-    /**
-     * @param float $queueTimeout seconds POST /begin and POST /pause may
-     *                            wait for their turn in the server's queue
-     */
-    public function __construct(
-        Transport $transport,
-        private readonly float $queueTimeout = 10.0,
-    ) {
+    public function __construct(Transport $transport)
+    {
         $this->api = new Api($transport);
         $this->appendHandler = $this->api;
         $this->readHandler = $this->api;
@@ -69,32 +62,30 @@ final class Client
      * Connects over TCP.
      *
      * @param string|null $token Bearer token, when the server has enableAuth on
-     * @param float $queueTimeout seconds POST /begin and POST /pause may wait for their turn
-     * @param float $timeout seconds to wait for any other response
+     * @param float $timeout seconds to wait for a response, including the
+     *                       wait for a turn in the server's queue
      */
     public static function http(
         string $baseUrl = 'http://127.0.0.1:8085',
         ?string $token = null,
-        float $queueTimeout = 10.0,
-        float $timeout = 30.0,
+        float $timeout = 60.0,
     ): self {
-        return new self(new CurlTransport($baseUrl, token: $token, timeout: $timeout), $queueTimeout);
+        return new self(new CurlTransport($baseUrl, token: $token, timeout: $timeout));
     }
 
     /**
      * Connects over the server's unix socket.
      *
      * @param string|null $token Bearer token, when the server has enableAuth on
-     * @param float $queueTimeout seconds POST /begin and POST /pause may wait for their turn
-     * @param float $timeout seconds to wait for any other response
+     * @param float $timeout seconds to wait for a response, including the
+     *                       wait for a turn in the server's queue
      */
     public static function unixSocket(
         string $socketPath = '/run/tamarackdb/tamarackdb.sock',
         ?string $token = null,
-        float $queueTimeout = 10.0,
-        float $timeout = 30.0,
+        float $timeout = 60.0,
     ): self {
-        return new self(new CurlTransport(unixSocket: $socketPath, token: $token, timeout: $timeout), $queueTimeout);
+        return new self(new CurlTransport(unixSocket: $socketPath, token: $token, timeout: $timeout));
     }
 
     /**
@@ -120,14 +111,13 @@ final class Client
     }
 
     /**
-     * Opens a transaction. Waits for its turn when another one is active,
-     * for at most the queue timeout. From then on, readEvents(),
+     * Opens a transaction. Waits for its turn when another one is active.
+     * From then on, readEvents(),
      * getProjection(), and writeProjections() run inside it, until
      * commit() or rollback().
      *
      * @throws TransactionAlreadyActiveException when this client already has a transaction
      * @throws TimeoutException when the turn didn't come in time
-     * @throws PausedException when the server is paused for a projection rebuild
      * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function beginTransaction(): void
@@ -135,7 +125,7 @@ final class Client
         if ($this->ticket !== null) {
             throw new TransactionAlreadyActiveException(\sprintf('transaction %s is already active', $this->ticket));
         }
-        $data = Json::decodeObject($this->api->call('POST', '/begin', timeout: $this->queueTimeout)->body);
+        $data = Json::decodeObject($this->api->call('POST', '/begin')->body);
         if (!\is_string($data['ticket'] ?? null) || $data['ticket'] === '') {
             throw new ProtocolException('invalid POST /begin response');
         }
@@ -250,8 +240,11 @@ final class Client
     /**
      * Creates, replaces, and deletes projections. Inside a transaction,
      * send every change in one call, right before the commit. Outside one,
-     * the server only accepts it while paused, for a projection rebuild,
-     * and each call commits on its own.
+     * for a projection rebuild, the call waits for its turn in the server's
+     * queue and commits on its own.
+     *
+     * @throws TimeoutException when the turn and the write didn't end in time
+     * @throws TransactionQueueFullException outside a transaction, when too many requests are already waiting
      */
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
@@ -264,8 +257,11 @@ final class Client
     }
 
     /**
-     * Deletes every projection of one type. Only accepted while the server
-     * is paused.
+     * Deletes every projection of one type, for a projection rebuild. The
+     * call waits for its turn in the server's queue.
+     *
+     * @throws TimeoutException when the turn and the delete didn't end in time
+     * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function deleteProjectionsByType(string $type): void
     {
@@ -273,39 +269,25 @@ final class Client
     }
 
     /**
-     * Deletes every projection. Only accepted while the server is paused.
+     * Deletes every projection, for a projection rebuild. The call waits
+     * for its turn in the server's queue.
+     *
+     * @throws TimeoutException when the turn and the delete didn't end in time
+     * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function deleteAllProjections(): void
     {
         $this->api->call('DELETE', '/projections');
     }
 
-    /**
-     * Pauses the server for a projection rebuild, once every transaction
-     * already queued has ended. From then on, beginTransaction() fails with
-     * a PausedException until resume().
-     *
-     * @throws TimeoutException when the turn didn't come within the queue timeout
-     * @throws TransactionQueueFullException when too many requests are already waiting
-     */
-    public function pause(): void
-    {
-        $this->api->call('POST', '/pause', timeout: $this->queueTimeout);
-    }
-
-    public function resume(): void
-    {
-        $this->api->call('POST', '/resume');
-    }
-
     public function health(): Health
     {
         $data = Json::decodeObject($this->api->call('GET', '/health')->body);
-        if (!\is_string($data['status'] ?? null) || !\is_string($data['version'] ?? null) || !\is_bool($data['paused'] ?? null)) {
+        if (!\is_string($data['status'] ?? null) || !\is_string($data['version'] ?? null)) {
             throw new ProtocolException('invalid GET /health response');
         }
 
-        return new Health($data['status'], $data['version'], $data['paused']);
+        return new Health($data['status'], $data['version']);
     }
 
     /**

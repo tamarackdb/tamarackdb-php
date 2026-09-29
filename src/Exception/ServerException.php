@@ -20,12 +20,10 @@ class ServerException extends \RuntimeException implements TamarackDBException
         'Unauthorized' => UnauthorizedException::class,
         'ProjectionNotFound' => ProjectionNotFoundException::class,
         'ConcurrencyException' => ConcurrencyException::class,
-        'NotPaused' => NotPausedException::class,
         'TicketNotActive' => TicketNotActiveException::class,
         'PayloadTooLarge' => PayloadTooLargeException::class,
         'InternalError' => InternalErrorException::class,
         'TransactionQueueFull' => TransactionQueueFullException::class,
-        'Paused' => PausedException::class,
         'ShuttingDown' => ShuttingDownException::class,
         'Unavailable' => UnavailableException::class,
     ];
