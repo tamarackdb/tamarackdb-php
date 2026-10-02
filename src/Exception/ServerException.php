@@ -24,6 +24,7 @@ class ServerException extends \RuntimeException implements TamarackDBException
         'PayloadTooLarge' => PayloadTooLargeException::class,
         'InternalError' => InternalErrorException::class,
         'TransactionQueueFull' => TransactionQueueFullException::class,
+        'WriteQueueFull' => WriteQueueFullException::class,
         'ShuttingDown' => ShuttingDownException::class,
         'Unavailable' => UnavailableException::class,
     ];
