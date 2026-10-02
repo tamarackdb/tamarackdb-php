@@ -5,9 +5,8 @@ declare(strict_types=1);
 namespace TamarackDB\Tests\Integration;
 
 use PHPUnit\Framework\TestCase;
-use TamarackDB\Client;
-use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransportException;
+use TamarackDB\Http\CurlTransport;
 
 /**
  * A tamarackdb-server process for the integration tests, started from the
@@ -51,11 +50,11 @@ final class TestServer
         return self::$servers[$key];
     }
 
-    public function client(?string $token = null, float $timeout = 60.0): Client
+    public function transport(?string $token = null, float $timeout = 60.0): CurlTransport
     {
         return $this->socket === null
-            ? Client::http($this->url, $token, $timeout)
-            : Client::unixSocket($this->socket, $token, $timeout);
+            ? new CurlTransport($this->url, token: $token, timeout: $timeout)
+            : new CurlTransport(unixSocket: $this->socket, token: $token, timeout: $timeout);
     }
 
     /**
@@ -131,18 +130,16 @@ final class TestServer
 
     private function waitUntilReady(): void
     {
-        $client = $this->client();
+        $transport = $this->transport();
         $deadline = microtime(true) + 10;
         while (microtime(true) < $deadline) {
             if (!proc_get_status($this->process)['running']) {
                 throw new \RuntimeException("tamarackdb-server exited:\n" . file_get_contents($this->dir . '/server.log'));
             }
             try {
-                $client->health();
+                // Any answer will do, even 401 when auth is on.
+                $transport->send('GET', '/health');
 
-                return;
-            } catch (ServerException) {
-                // It answered, if only with 401 when auth is on.
                 return;
             } catch (TransportException) {
                 usleep(50_000);
