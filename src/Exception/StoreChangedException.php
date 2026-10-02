@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace TamarackDB\Exception;
 
 /**
- * readEvents() found a store ID other than the one of the given
- * StorePosition, or the store ID changed between two pages: a reset
- * emptied the store. Read again from the start, with no position, and
- * rebuild what depends on the old one. The transaction stays open.
+ * readEvents() found that a reset emptied the store, during the read or
+ * since the first read of the transaction. Sequence Positions read before
+ * the reset mean nothing now: read again from the start, and rebuild what
+ * depends on them. The transaction stays open.
  */
 class StoreChangedException extends \RuntimeException implements TamarackDBException {}

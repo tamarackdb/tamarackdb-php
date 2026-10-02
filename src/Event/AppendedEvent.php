@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace TamarackDB\Event;
 
 /**
- * The Sequence Position and time TamarackDB gave an event at commit. The
- * store ID is the same for every event of a commit: it's on the
- * CommitResult.
+ * The Sequence Position and time TamarackDB gave an event at commit.
  */
 final readonly class AppendedEvent
 {
