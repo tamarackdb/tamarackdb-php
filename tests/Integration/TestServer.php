@@ -11,8 +11,9 @@ use TamarackDB\Exception\TransportException;
 
 /**
  * A tamarackdb-server process for the integration tests, started from the
- * binary named by TAMARACKDB_SERVER_BIN, with devMode on and an empty
- * data directory. Tests are skipped when the variable isn't set.
+ * binary named by TAMARACKDB_SERVER_BIN, with devMode on and a new database
+ * created by the tamarackdb-init binary next to it. Tests are skipped when
+ * the variable isn't set.
  *
  * Servers are started once per configuration and stopped when PHP exits.
  */
@@ -66,6 +67,8 @@ final class TestServer
         $dir = sys_get_temp_dir() . '/tdb-' . bin2hex(random_bytes(4));
         mkdir($dir);
 
+        self::initDatabase($bin, $dir);
+
         $env += ['TAMARACKDB_DATA_DIR' => $dir . '/data', 'TAMARACKDB_DEV_MODE' => 'true'];
         if ($unixSocket) {
             $socket = $dir . '/s.sock';
@@ -96,6 +99,22 @@ final class TestServer
         $server->waitUntilReady();
 
         return $server;
+    }
+
+    /**
+     * The server refuses to start without a database: tamarackdb-init,
+     * built next to it, creates one in $dir/data.
+     */
+    private static function initDatabase(string $serverBin, string $dir): void
+    {
+        $init = \dirname($serverBin) . '/tamarackdb-init';
+        if (!is_executable($init)) {
+            throw new \RuntimeException(\sprintf('"%s" is missing or not executable: build it next to tamarackdb-server', $init));
+        }
+        exec(escapeshellarg($init) . ' -data-dir ' . escapeshellarg($dir . '/data') . ' 2>&1', $output, $code);
+        if ($code !== 0) {
+            throw new \RuntimeException("tamarackdb-init failed:\n" . implode("\n", $output));
+        }
     }
 
     private static function freePort(): int

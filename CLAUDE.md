@@ -7,12 +7,14 @@ assume a path, ask for it when you need to read the server's code.
 
 ## Source of truth
 
-The client follows the server's HTTP API as described in the integration
-guide, <https://tamarackdb.github.io/docs/guides/integration/>. Read it
-before changing how the client talks to the server. Link to the site, never
-to the `.md` files of the server repo. When the guide and the Go code
-(`internal/api/` in the server repo) disagree, the Go code is what the server
-does: point out the gap instead of guessing.
+What a client library must do is on the site, page Client libraries,
+<https://tamarackdb.github.io/docs/integration/client-libraries/>. The HTTP
+contract is in the HTTP API section, starting at
+<https://tamarackdb.github.io/docs/http-api/conventions/>. Read both before
+changing how the client keeps transactions or talks to the server. Link to
+the site, never to the `.md` files of the server repo. When the site and the
+Go code (`internal/api/` in the server repo) disagree, the Go code is what
+the server does: point out the gap instead of guessing.
 
 The README states which server version the client is tested against. Update
 it when the client moves to a new server version.
@@ -47,9 +49,14 @@ TAMARACKDB_SERVER_BIN=/path/to/tamarackdb-server composer test:integration
 
 Integration tests start their own servers (TCP on a free port, unix socket,
 auth on) from `TAMARACKDB_SERVER_BIN`, with `devMode` on, and are skipped
-without it. Build the binary from a clone of the server repo with
-`make tamarackdb-server`, and check its version with `-version`: it must
-match the server version the README states.
+without it. Each server gets a new database first, from the
+`tamarackdb-init` binary in the same directory. Build both from a clone of
+the server repo with `make build`, and check the version with `-version`:
+it must match the server version the README states.
+
+The matcher's tests replay `tests/Fixtures/query-cases.json`, a copy of the
+server repo's `testdata/query-cases.json`. Copy it again when the client
+moves to a new server version.
 
 Fix PHPStan errors at their cause. Don't add `@phpstan-ignore` comments,
 baseline entries, or casts just to silence one.
@@ -67,9 +74,9 @@ comments, and the README are in English.
 - Necessary technical terms stay (NDJSON, Sequence Position, Append
   Condition, generator, etc.): they are the real names of things. Simplify
   sentence length and phrasing around them, not the technical precision.
-- Use the server's own terms, as the integration guide defines them:
-  ticket, Sequence Position, Append Condition, projection, projection
-  rebuild, decision model, event handler.
+- Use the server's own terms, as the site defines them: transaction, write,
+  store ID, Sequence Position, Append Condition, projection, projection
+  rebuild, decision model, event handler, projector, processor.
 - Never use an em-dash ("—"). Use a comma, colon, semicolon, parentheses,
   or a new sentence instead.
 
@@ -84,7 +91,7 @@ in a commit message, not in the doc or comment itself.
 
 The README is the only documentation. Its audience is developers using the
 library in their application, except the Development section, which is for
-contributors. Don't repeat the server's integration guide at length: explain
+contributors. Don't repeat the server's documentation at length: explain
 what the client does, and link to <https://tamarackdb.github.io/> for the
 concepts.
 
