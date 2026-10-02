@@ -70,8 +70,7 @@ final class CurlTransport implements Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        bool $drainOnAbort = false,
-    ): \Generator {
+    ): StreamedResponse {
         $responseHeaders = [];
         $ch = $this->handle($method, $path, $headers, $body, $responseHeaders);
         $buffer = '';
@@ -87,48 +86,74 @@ final class CurlTransport implements Transport
 
         $mh = curl_multi_init();
         curl_multi_add_handle($mh, $ch);
-        $finished = false;
         try {
+            // The headers are complete once the first body bytes arrive, or
+            // once the transfer is over.
             do {
                 $running = $this->step($mh);
-                if (curl_getinfo($ch, CURLINFO_RESPONSE_CODE) === 200) {
-                    $lines = explode("\n", $buffer);
-                    $buffer = array_pop($lines);
-                    foreach ($lines as $line) {
-                        $line = rtrim($line, "\r");
-                        if ($line !== '') {
-                            yield $line;
-                        }
-                    }
-                }
-            } while ($running);
-            $finished = true;
-
-            $info = curl_multi_info_read($mh);
-            $errno = \is_array($info) && \is_int($info['result'] ?? null) ? $info['result'] : CURLE_OK;
-            if ($errno !== CURLE_OK) {
-                throw $this->curlError($errno, curl_strerror($errno) ?? '', $method, $path);
+            } while ($running && $buffer === '');
+            if (!$running) {
+                $this->finish($mh, $method, $path);
             }
             $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
             if ($status !== 200) {
+                while ($running) {
+                    $running = $this->step($mh);
+                }
+                $this->finish($mh, $method, $path);
+
                 throw ServerException::fromResponse(new Response($status, $responseHeaders, $buffer));
+            }
+        } catch (\Throwable $e) {
+            curl_multi_remove_handle($mh, $ch);
+
+            throw $e;
+        }
+
+        return new StreamedResponse($responseHeaders, $this->lines($mh, $ch, $running, $buffer, $method, $path));
+    }
+
+    /**
+     * @return \Generator<int, string>
+     */
+    private function lines(\CurlMultiHandle $mh, \CurlHandle $ch, bool $running, string &$buffer, string $method, string $path): \Generator
+    {
+        try {
+            while (true) {
+                $lines = explode("\n", $buffer);
+                $buffer = array_pop($lines);
+                foreach ($lines as $line) {
+                    $line = rtrim($line, "\r");
+                    if ($line !== '') {
+                        yield $line;
+                    }
+                }
+                if (!$running) {
+                    break;
+                }
+                $running = $this->step($mh);
+                if (!$running) {
+                    $this->finish($mh, $method, $path);
+                }
             }
             $line = rtrim($buffer, "\r");
             if ($line !== '') {
                 yield $line;
             }
         } finally {
-            if (!$finished && $drainOnAbort) {
-                try {
-                    do {
-                        $buffer = '';
-                        $running = $this->step($mh);
-                    } while ($running);
-                } catch (TransportException) {
-                    // The connection is gone: nothing left to drain.
-                }
-            }
             curl_multi_remove_handle($mh, $ch);
+        }
+    }
+
+    /**
+     * Throws when the finished transfer ended on a curl error.
+     */
+    private function finish(\CurlMultiHandle $mh, string $method, string $path): void
+    {
+        $info = curl_multi_info_read($mh);
+        $errno = \is_array($info) && \is_int($info['result'] ?? null) ? $info['result'] : CURLE_OK;
+        if ($errno !== CURLE_OK) {
+            throw $this->curlError($errno, curl_strerror($errno) ?? '', $method, $path);
         }
     }
 

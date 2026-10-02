@@ -9,8 +9,8 @@ use TamarackDB\Exception\TransportException;
 
 /**
  * Sends HTTP requests to one TamarackDB server. The client adds the
- * TamarackDB headers (ticket, content type); a transport adds whatever its
- * connection needs, such as the Bearer token.
+ * headers of the request itself (content type); a transport adds whatever
+ * its connection needs, such as the Bearer token.
  */
 interface Transport
 {
@@ -29,26 +29,20 @@ interface Transport
     ): Response;
 
     /**
-     * Sends a request and yields the lines of a 200 response body as they
-     * arrive, without their line endings. Empty lines are skipped.
-     *
-     * When the consumer stops early, the connection is closed, unless
-     * $drainOnAbort is true: then the rest of the response is read and
-     * discarded first. A read with a ticket needs this, since a closed
-     * connection makes the server roll the transaction back.
+     * Sends a request and returns once the headers of a 200 response have
+     * arrived. The body lines are read as the consumer asks for them. When
+     * the consumer stops early, the connection is closed.
      *
      * @param array<string, string> $headers
      *
-     * @return \Generator<int, string>
-     *
      * @throws ServerException on a status other than 200
-     * @throws TransportException when the response didn't arrive in full
+     * @throws TransportException when the headers didn't arrive, or when
+     *                            the body lines don't arrive in full
      */
     public function stream(
         string $method,
         string $path,
         array $headers = [],
         ?string $body = null,
-        bool $drainOnAbort = false,
-    ): \Generator;
+    ): StreamedResponse;
 }

@@ -7,6 +7,7 @@ namespace TamarackDB\Tests\Unit;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
+use TamarackDB\Http\StreamedResponse;
 use TamarackDB\Http\Transport;
 
 /**
@@ -14,7 +15,7 @@ use TamarackDB\Http\Transport;
  */
 final class FakeTransport implements Transport
 {
-    /** @var list<array{method: string, path: string, headers: array<string, string>, body: ?string, drainOnAbort: ?bool}> */
+    /** @var list<array{method: string, path: string, headers: array<string, string>, body: ?string}> */
     public array $requests = [];
 
     /** @var list<Response|\Throwable|CutStream> */
@@ -29,7 +30,7 @@ final class FakeTransport implements Transport
 
     public function send(string $method, string $path, array $headers = [], ?string $body = null): Response
     {
-        $this->requests[] = ['method' => $method, 'path' => $path, 'headers' => $headers, 'body' => $body, 'drainOnAbort' => null];
+        $this->requests[] = ['method' => $method, 'path' => $path, 'headers' => $headers, 'body' => $body];
         $response = $this->next();
         if (!$response instanceof Response) {
             throw new \LogicException('send() got a canned stream');
@@ -38,23 +39,18 @@ final class FakeTransport implements Transport
         return $response;
     }
 
-    public function stream(string $method, string $path, array $headers = [], ?string $body = null, bool $drainOnAbort = false): \Generator
+    public function stream(string $method, string $path, array $headers = [], ?string $body = null): StreamedResponse
     {
-        $this->requests[] = ['method' => $method, 'path' => $path, 'headers' => $headers, 'body' => $body, 'drainOnAbort' => $drainOnAbort];
+        $this->requests[] = ['method' => $method, 'path' => $path, 'headers' => $headers, 'body' => $body];
         $response = $this->next();
         if ($response instanceof CutStream) {
-            yield from $response->lines;
-
-            throw new TransportException('connection dropped');
+            return new StreamedResponse($response->headers, self::cut($response->lines));
         }
         if ($response->statusCode !== 200) {
             throw ServerException::fromResponse($response);
         }
-        foreach (explode("\n", $response->body) as $line) {
-            if ($line !== '') {
-                yield $line;
-            }
-        }
+
+        return new StreamedResponse($response->headers, self::lines($response->body));
     }
 
     /**
@@ -71,6 +67,30 @@ final class FakeTransport implements Transport
 
         /** @var array<string, mixed> $body */
         return $body;
+    }
+
+    /**
+     * @param list<string> $lines
+     *
+     * @return \Generator<int, string>
+     */
+    private static function cut(array $lines): \Generator
+    {
+        yield from $lines;
+
+        throw new TransportException('connection dropped');
+    }
+
+    /**
+     * @return \Generator<int, string>
+     */
+    private static function lines(string $body): \Generator
+    {
+        foreach (explode("\n", $body) as $line) {
+            if ($line !== '') {
+                yield $line;
+            }
+        }
     }
 
     private function next(): Response|CutStream
