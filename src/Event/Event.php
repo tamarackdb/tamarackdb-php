@@ -6,8 +6,10 @@ namespace TamarackDB\Event;
 
 use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\ProtocolException;
+use TamarackDB\Internal\Matcher;
 use TamarackDB\Internal\Tags;
 use TamarackDB\Internal\Time;
+use TamarackDB\Query\Query;
 
 /**
  * A stored event, as read back from TamarackDB.
@@ -40,6 +42,15 @@ final readonly class Event
     ) {
         $this->identifiers = Tags::normalize($identifiers, 'identifier');
         $this->metadata = Tags::normalize($metadata, 'metadata');
+    }
+
+    /**
+     * Tells whether this event matches $query. A null query matches every
+     * event.
+     */
+    public function matchesQuery(?Query $query): bool
+    {
+        return Matcher::matches($query, $this->type, $this->identifiers, $this->metadata);
     }
 
     /**
