@@ -180,12 +180,20 @@ final class Api
         $this->call('DELETE', self::txPath($txId));
     }
 
-    public function getProjection(string $type, string $id): ?Projection
+    /**
+     * Reads a projection, committed outside a transaction, or as
+     * transaction $txId sees it. Only a committed projection has a version.
+     */
+    public function getProjection(?string $txId, string $type, string $id): ?Projection
     {
+        $path = '/projections/' . rawurlencode($type) . '/' . rawurlencode($id);
         try {
-            $response = $this->call('GET', '/projections/' . rawurlencode($type) . '/' . rawurlencode($id));
+            $response = $this->call('GET', $txId === null ? $path : self::txPath($txId) . $path);
         } catch (ProjectionNotFoundException) {
             return null;
+        }
+        if ($txId !== null) {
+            return new Projection($type, $id, null, $response->body);
         }
         $version = $response->header(self::VERSION_HEADER);
         if ($version === null) {
@@ -193,6 +201,18 @@ final class Api
         }
 
         return new Projection($type, $id, $version, $response->body);
+    }
+
+    /**
+     * Writes one projection in transaction $txId: its new payload, or its
+     * deletion when $payload is null.
+     */
+    public function writeTxProjection(string $txId, string $type, string $id, ?string $payload): void
+    {
+        $request = $payload === null
+            ? ['delete' => [['type' => $type, 'id' => $id]]]
+            : ['upsert' => [['type' => $type, 'id' => $id, 'payload' => $payload]]];
+        $this->call('POST', self::txPath($txId) . '/projections', $request);
     }
 
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult

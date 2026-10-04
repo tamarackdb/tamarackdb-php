@@ -49,6 +49,9 @@ final class Client
 
     private ?string $txId = null;
 
+    /** @var array<string, true> the projections read in the transaction, keyed by type and id */
+    private array $readProjections = [];
+
     public function __construct(Transport $transport)
     {
         $this->api = new Api($transport);
@@ -85,8 +88,9 @@ final class Client
     }
 
     /**
-     * Opens a transaction. From then on, readEvents(), appendEvents(), and
-     * getProjection() run inside it, until commit() or rollback().
+     * Opens a transaction. From then on, readEvents(), appendEvents(),
+     * getProjection(), saveProjection(), and deleteProjection() run inside
+     * it, until commit() or rollback().
      *
      * @throws TransactionAlreadyActiveException when this client already has a transaction
      */
@@ -96,6 +100,7 @@ final class Client
             throw new TransactionAlreadyActiveException(\sprintf('transaction %s is already active', $this->txId));
         }
         $this->txId = $this->api->begin();
+        $this->readProjections = [];
     }
 
     /**
@@ -122,7 +127,7 @@ final class Client
     public function commit(): void
     {
         $txId = $this->requireTransaction();
-        $this->txId = null;
+        $this->end();
         $this->api->commit($txId);
     }
 
@@ -138,7 +143,7 @@ final class Client
         if ($txId === null) {
             return;
         }
-        $this->txId = null;
+        $this->end();
         try {
             $this->api->abandon($txId);
         } catch (TamarackDBException) {
@@ -208,6 +213,7 @@ final class Client
      * @param list<NewEvent> $events
      *
      * @throws NoActiveTransactionException outside a transaction
+     * @throws ServerException when the server refuses the write: the transaction is over
      */
     public function appendEvents(array $events): \DateTimeImmutable
     {
@@ -226,10 +232,46 @@ final class Client
     {
         $txId = $this->txId;
         if ($txId === null) {
-            return $this->api->getProjection($type, $id);
+            return $this->api->getProjection(null, $type, $id);
         }
+        $projection = $this->runInTransaction($txId, fn(): ?Projection => $this->api->getProjection($txId, $type, $id));
+        $this->readProjections[self::projectionKey($type, $id)] = true;
 
-        return $this->runInTransaction($txId, fn(): ?Projection => $this->api->getProjection($type, $id));
+        return $projection;
+    }
+
+    /**
+     * Creates or replaces a projection in the transaction, with its whole
+     * new payload. The transaction must have read it first: if it didn't,
+     * this reads it, so call it only once the events of the last read are
+     * written.
+     *
+     * @throws NoActiveTransactionException outside a transaction
+     * @throws InvalidArgumentException when $type or $id is empty
+     * @throws ServerException when the server refuses the read or the write: the transaction is over
+     */
+    public function saveProjection(string $type, string $id, string $payload): void
+    {
+        $txId = $this->requireTransaction();
+        $this->readBeforeWrite($txId, $type, $id);
+        $this->runInTransaction($txId, fn() => $this->api->writeTxProjection($txId, $type, $id, $payload));
+    }
+
+    /**
+     * Deletes a projection in the transaction. Deleting one that doesn't
+     * exist does nothing. The transaction must have read it first: if it
+     * didn't, this reads it, so call it only once the events of the last
+     * read are written.
+     *
+     * @throws NoActiveTransactionException outside a transaction
+     * @throws InvalidArgumentException when $type or $id is empty
+     * @throws ServerException when the server refuses the read or the write: the transaction is over
+     */
+    public function deleteProjection(string $type, string $id): void
+    {
+        $txId = $this->requireTransaction();
+        $this->readBeforeWrite($txId, $type, $id);
+        $this->runInTransaction($txId, fn() => $this->api->writeTxProjection($txId, $type, $id, null));
     }
 
     /**
@@ -291,7 +333,7 @@ final class Client
      */
     public function reset(): void
     {
-        $this->txId = null;
+        $this->end();
         $this->api->call('POST', '/reset');
     }
 
@@ -337,8 +379,34 @@ final class Client
     private function forget(string $txId): void
     {
         if ($this->txId === $txId) {
-            $this->txId = null;
+            $this->end();
         }
+    }
+
+    private function end(): void
+    {
+        $this->txId = null;
+        $this->readProjections = [];
+    }
+
+    /**
+     * Reads the projection in transaction $txId, unless the transaction
+     * already read it: the server only lets a transaction write a
+     * projection it read.
+     */
+    private function readBeforeWrite(string $txId, string $type, string $id): void
+    {
+        if ($type === '' || $id === '') {
+            throw new InvalidArgumentException('a projection type and id must not be empty');
+        }
+        if (!isset($this->readProjections[self::projectionKey($type, $id)])) {
+            $this->getProjection($type, $id);
+        }
+    }
+
+    private static function projectionKey(string $type, string $id): string
+    {
+        return $type . "\0" . $id;
     }
 
     private function requireTransaction(): string
