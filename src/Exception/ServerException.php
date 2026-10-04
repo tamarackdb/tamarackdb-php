@@ -19,6 +19,7 @@ class ServerException extends \RuntimeException implements TamarackDBException
         'InvalidRequest' => InvalidRequestException::class,
         'Unauthorized' => UnauthorizedException::class,
         'ProjectionNotFound' => ProjectionNotFoundException::class,
+        'TransactionNotFound' => TransactionNotFoundException::class,
         'ConcurrencyException' => ConcurrencyException::class,
         'PayloadTooLarge' => PayloadTooLargeException::class,
         'InternalError' => InternalErrorException::class,

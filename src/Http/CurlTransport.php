@@ -70,7 +70,6 @@ final class CurlTransport implements Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        bool $drainOnAbort = false,
         ?\Closure $onHeaders = null,
     ): \Generator {
         $responseHeaders = [];
@@ -88,7 +87,6 @@ final class CurlTransport implements Transport
 
         $mh = curl_multi_init();
         curl_multi_add_handle($mh, $ch);
-        $finished = false;
         try {
             do {
                 $running = $this->step($mh);
@@ -108,7 +106,6 @@ final class CurlTransport implements Transport
                     }
                 }
             } while ($running);
-            $finished = true;
 
             $info = curl_multi_info_read($mh);
             $errno = \is_array($info) && \is_int($info['result'] ?? null) ? $info['result'] : CURLE_OK;
@@ -127,16 +124,6 @@ final class CurlTransport implements Transport
                 yield $line;
             }
         } finally {
-            if (!$finished && $drainOnAbort) {
-                try {
-                    do {
-                        $buffer = '';
-                        $running = $this->step($mh);
-                    } while ($running);
-                } catch (TransportException) {
-                    // The connection is gone: nothing left to drain.
-                }
-            }
             curl_multi_remove_handle($mh, $ch);
         }
     }

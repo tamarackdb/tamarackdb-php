@@ -32,9 +32,7 @@ interface Transport
      * Sends a request and yields the lines of a 200 response body as they
      * arrive, without their line endings. Empty lines are skipped.
      *
-     * When the consumer stops early, the connection is closed, unless
-     * $drainOnAbort is true: then the rest of the response is read and
-     * discarded first.
+     * When the consumer stops early, the connection is closed.
      *
      * $onHeaders gets the response headers of a 200 response, keyed by
      * lowercase name, once, before the first line.
@@ -52,7 +50,6 @@ interface Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        bool $drainOnAbort = false,
         ?\Closure $onHeaders = null,
     ): \Generator;
 }

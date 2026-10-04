@@ -41,6 +41,19 @@ final class Responses
         return new Response(200, ['content-type' => 'application/x-ndjson', 'x-tamarackdb-store' => $store], implode("\n", $lines) . "\n");
     }
 
+    /**
+     * The NDJSON response of a read in a transaction: $lines, then the
+     * trailer.
+     *
+     * @param list<string> $lines
+     */
+    public static function txRead(array $lines): Response
+    {
+        $lines[] = json_encode(['end' => true], JSON_THROW_ON_ERROR);
+
+        return new Response(200, ['content-type' => 'application/x-ndjson'], implode("\n", $lines) . "\n");
+    }
+
     public static function eventLine(int $sequence): string
     {
         return json_encode([

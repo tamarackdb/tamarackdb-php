@@ -4,17 +4,21 @@ declare(strict_types=1);
 
 namespace TamarackDB;
 
-use TamarackDB\Event\AppendCondition;
-use TamarackDB\Event\AppendedEvent;
+use TamarackDB\Event\Event;
 use TamarackDB\Event\Events;
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ConcurrencyException;
+use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\StoreChangedException;
+use TamarackDB\Exception\TamarackDBException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
+use TamarackDB\Exception\TransactionNotFoundException;
+use TamarackDB\Exception\TransportException;
 use TamarackDB\Exception\WriteQueueFullException;
 use TamarackDB\Http\CurlTransport;
 use TamarackDB\Http\Transport;
@@ -32,6 +36,10 @@ use TamarackDB\Query\Query;
  * time: beginTransaction() opens it, and every call until commit() or
  * rollback() runs inside it.
  *
+ * Any server error on a call in the transaction ends it, except a missing
+ * projection. A transport error leaves it open on this side, since the
+ * call may not have reached the server: call rollback().
+ *
  *     $client = Client::http('http://127.0.0.1:8085');
  *     $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock', token: 'secret');
  */
@@ -39,7 +47,7 @@ final class Client
 {
     private readonly Api $api;
 
-    private ?string $ticket = null;
+    private ?string $txId = null;
 
     public function __construct(Transport $transport)
     {
@@ -77,68 +85,97 @@ final class Client
     }
 
     /**
-     * Opens a transaction. Waits for its turn when another one is active.
-     * From then on, readEvents(),
-     * getProjection(), and writeProjections() run inside it, until
-     * commit() or rollback().
+     * Opens a transaction. From then on, readEvents(), appendEvents(), and
+     * getProjection() run inside it, until commit() or rollback().
      *
      * @throws TransactionAlreadyActiveException when this client already has a transaction
-     * @throws TimeoutException when the turn didn't come in time
      */
     public function beginTransaction(): void
     {
-        if ($this->ticket !== null) {
-            throw new TransactionAlreadyActiveException(\sprintf('transaction %s is already active', $this->ticket));
+        if ($this->txId !== null) {
+            throw new TransactionAlreadyActiveException(\sprintf('transaction %s is already active', $this->txId));
         }
-        $data = Json::decodeObject($this->api->call('POST', '/begin')->body);
-        if (!\is_string($data['ticket'] ?? null) || $data['ticket'] === '') {
-            throw new ProtocolException('invalid POST /begin response');
-        }
-        $this->ticket = $data['ticket'];
+        $this->txId = $this->api->begin();
     }
 
     /**
      * Whether this client has a transaction, as far as it knows. The server
-     * can still end it on its own, for example once its idle timeout is
-     * reached.
+     * can still end it on its own, for example once it expires.
      */
     public function inTransaction(): bool
     {
-        return $this->ticket !== null;
-    }
-
-    public function commit(): void
-    {
-        $ticket = $this->requireTicket();
-        $this->ticket = null;
-        $this->api->call('POST', '/commit');
-    }
-
-    public function rollback(): void
-    {
-        $ticket = $this->requireTicket();
-        $this->ticket = null;
-        $this->api->call('POST', '/rollback');
+        return $this->txId !== null;
     }
 
     /**
-     * Reads the events matching $query, oldest first. Pages are fetched as
-     * the events are iterated.
+     * Commits the transaction, in its turn in the server's queue. The
+     * transaction is over afterwards, whatever the outcome. If the
+     * response is lost, the commit can't be sent again: read what the
+     * transaction wrote to know whether it happened.
      *
-     * The read sees committed events only, and never waits for a write. A
-     * page cut short is resumed after the last event received, so no event
-     * is skipped or repeated.
+     * @throws NoActiveTransactionException outside a transaction
+     * @throws ConcurrencyException when what the transaction read changed since: run the whole command again
+     * @throws TransactionNotFoundException when the transaction expired, or an error ended it
+     * @throws TimeoutException when the turn and the commit didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
+     */
+    public function commit(): void
+    {
+        $txId = $this->requireTransaction();
+        $this->txId = null;
+        $this->api->commit($txId);
+    }
+
+    /**
+     * Abandons the transaction: nothing it holds is written. Without a
+     * transaction, it does nothing. It never throws, so it's safe in the
+     * error handler around a command: if the server can't be reached, the
+     * transaction expires there on its own.
+     */
+    public function rollback(): void
+    {
+        $txId = $this->txId;
+        if ($txId === null) {
+            return;
+        }
+        $this->txId = null;
+        try {
+            $this->api->abandon($txId);
+        } catch (TamarackDBException) {
+            // The server ends an abandoned transaction on its own.
+        }
+    }
+
+    /**
+     * Reads the events matching $query, oldest first.
+     *
+     * Outside a transaction, the read sees committed events only (Event),
+     * and never waits for a write. Pages are fetched as the events are
+     * iterated. A page cut short is resumed after the last event received,
+     * so no event is skipped or repeated.
      *
      * To follow new events, keep the last Sequence Position you got and
      * the store ID of the read (Events::storeId()). Read again later with
      * both. If the store was reset in between, the read throws a
      * StoreChangedException: start over from the beginning.
      *
-     * @param int|null $afterSequence only events after this Sequence Position
+     * Inside a transaction, the read is the one a decision rests on. It
+     * returns every committed event that matches (Event), then every event
+     * written earlier in the transaction that matches (PendingEvent), with
+     * no pages. The whole response is read before readEvents() returns.
+     * The next call must be
+     * appendEvents(), with the events of the decision or an empty list. A
+     * response cut short, or one this library can't read, abandons the
+     * transaction and throws: run the whole command again.
+     *
+     * @param int|null $afterSequence only events after this Sequence Position, outside a transaction
      * @param string|null $storeId the store ID $afterSequence comes from
      * @param int|null $pageSize events per request, or null for the server's default
      *
+     * @throws InvalidArgumentException inside a transaction, with $afterSequence, $storeId, or $pageSize
      * @throws StoreChangedException when a page comes from another store ID
+     * @throws ServerException when the server refuses the read; inside a transaction, the transaction is over
+     * @throws TransportException inside a transaction, when the response was cut short
      */
     public function readEvents(
         Query|AllEvents|NoEvents $query,
@@ -146,26 +183,37 @@ final class Client
         ?string $storeId = null,
         ?int $pageSize = null,
     ): Events {
-        return $this->api->readEvents($query, $afterSequence, $storeId, $pageSize);
+        $txId = $this->txId;
+        if ($txId === null) {
+            return $this->api->readEvents($query, $afterSequence, $storeId, $pageSize);
+        }
+        if ($afterSequence !== null || $storeId !== null || $pageSize !== null) {
+            throw new InvalidArgumentException('a read in a transaction takes no afterSequence, storeId, or pageSize');
+        }
+        $events = iterator_to_array($this->readTxEvents($txId, $query), false);
+
+        return new Events(null, static function () use ($events): \Generator {
+            yield from $events;
+        });
     }
 
     /**
-     * Appends events inside the active transaction, and returns the
-     * Sequence Position and time given to each, in order. With a
-     * condition, the append fails with a ConcurrencyException if an event
-     * matching it exists.
+     * Writes events in the transaction, and returns the time they all
+     * carry: give it to each event before the code that reacts to it
+     * runs. The events get their Sequence Position at commit.
      *
-     * @param list<NewEvent> $events at most 100
+     * The write closes the read before it. An empty list is the decision
+     * to write nothing.
      *
-     * @return list<AppendedEvent>
+     * @param list<NewEvent> $events
      *
      * @throws NoActiveTransactionException outside a transaction
      */
-    public function appendEvents(array $events, ?AppendCondition $condition = null): array
+    public function appendEvents(array $events): \DateTimeImmutable
     {
-        $ticket = $this->requireTicket();
+        $txId = $this->requireTransaction();
 
-        return $this->run($ticket, fn(): array => $this->api->appendEvents($events, $condition));
+        return $this->runInTransaction($txId, fn(): \DateTimeImmutable => $this->api->writeTxEvents($txId, array_values($events)));
     }
 
     /**
@@ -176,12 +224,12 @@ final class Client
      */
     public function getProjection(string $type, string $id): ?Projection
     {
-        $ticket = $this->ticket;
-        if ($ticket === null) {
+        $txId = $this->txId;
+        if ($txId === null) {
             return $this->api->getProjection($type, $id);
         }
 
-        return $this->run($ticket, fn(): ?Projection => $this->api->getProjection($type, $id));
+        return $this->runInTransaction($txId, fn(): ?Projection => $this->api->getProjection($type, $id));
     }
 
     /**
@@ -196,7 +244,7 @@ final class Client
      */
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        if ($this->ticket !== null) {
+        if ($this->txId !== null) {
             throw new TransactionAlreadyActiveException('writeProjections() runs outside a transaction');
         }
 
@@ -243,42 +291,58 @@ final class Client
      */
     public function reset(): void
     {
-        $this->ticket = null;
+        $this->txId = null;
         $this->api->call('POST', '/reset');
     }
 
     /**
+     * Runs a call in transaction $txId, and forgets the transaction when
+     * the server answers with an error: the server ended it.
+     *
      * @template T
      *
      * @param \Closure(): T $call
      *
      * @return T
      */
-    private function run(string $ticket, \Closure $call): mixed
+    private function runInTransaction(string $txId, \Closure $call): mixed
     {
         try {
             return $call();
         } catch (ServerException $e) {
-            $this->forget($ticket);
+            $this->forget($txId);
             throw $e;
         }
     }
 
     /**
-     * Drops $ticket after a server error: the server rolled the
-     * transaction back. A missing projection never gets here, and a
-     * transport failure leaves the transaction unknown, so the ticket is
-     * kept and a rollback can still be attempted.
+     * @return \Generator<int, Event|PendingEvent>
      */
-    private function forget(string $ticket): void
+    private function readTxEvents(string $txId, Query|AllEvents|NoEvents $query): \Generator
     {
-        if ($this->ticket === $ticket) {
-            $this->ticket = null;
+        try {
+            yield from $this->api->readTxEvents($txId, $query);
+        } catch (ServerException $e) {
+            $this->forget($txId);
+            throw $e;
+        } catch (TransportException|ProtocolException $e) {
+            // The read's condition is open, and what it missed is unknown.
+            if ($this->txId === $txId) {
+                $this->rollback();
+            }
+            throw $e;
         }
     }
 
-    private function requireTicket(): string
+    private function forget(string $txId): void
     {
-        return $this->ticket ?? throw new NoActiveTransactionException('no active transaction');
+        if ($this->txId === $txId) {
+            $this->txId = null;
+        }
+    }
+
+    private function requireTransaction(): string
+    {
+        return $this->txId ?? throw new NoActiveTransactionException('no active transaction');
     }
 }

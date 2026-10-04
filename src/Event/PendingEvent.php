@@ -4,20 +4,20 @@ declare(strict_types=1);
 
 namespace TamarackDB\Event;
 
-use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Internal\EventLine;
 use TamarackDB\Internal\Tags;
 
 /**
- * A stored event, as read back from TamarackDB.
+ * An event written earlier in the current transaction, as a read in that
+ * transaction returns it. It gets its Sequence Position at commit.
  *
- * $time is when TamarackDB appended the event, in UTC. Only $sequence
- * defines the order of events.
+ * $time is the time of its write, in UTC: the time it will carry once
+ * committed.
  *
  * A name with one identifier or metadata value maps to a string, a name
  * with several values to a list.
  */
-final readonly class Event
+final readonly class PendingEvent
 {
     /** @var array<string, string|list<string>> */
     public array $identifiers;
@@ -30,7 +30,6 @@ final readonly class Event
      * @param array<string, string|list<string>> $metadata
      */
     public function __construct(
-        public int $sequence,
         public \DateTimeImmutable $time,
         public string $type,
         array $identifiers,
@@ -42,15 +41,12 @@ final readonly class Event
     }
 
     /**
-     * @param array<string, mixed> $data one committed event line of a read
+     * @param array<string, mixed> $data one pending event line of a QUERY /tx/{txId}/events response
      */
     public static function fromArray(array $data): self
     {
-        if (!\is_int($data['sequence'] ?? null)) {
-            throw new ProtocolException('invalid event from the server');
-        }
         $line = EventLine::parse($data);
 
-        return new self($data['sequence'], $line->time, $line->type, $line->identifiers, $line->metadata, $line->payload);
+        return new self($line->time, $line->type, $line->identifiers, $line->metadata, $line->payload);
     }
 }

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace TamarackDB\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\InvalidArgumentException;
@@ -133,15 +132,5 @@ final class QueryTest extends TestCase
     {
         $this->expectException(InvalidArgumentException::class);
         new NewEvent('');
-    }
-
-    public function testAppendConditionLeavesOutWhatIsNotSet(): void
-    {
-        self::assertSame([], new AppendCondition()->toArray());
-        self::assertSame(['afterSequence' => 0], new AppendCondition(afterSequence: 0)->toArray());
-        self::assertSame(
-            ['failIfEventsMatch' => [['types' => ['a']]], 'afterSequence' => 12],
-            new AppendCondition(new Query(EventType::in('a')), 12)->toArray(),
-        );
     }
 }

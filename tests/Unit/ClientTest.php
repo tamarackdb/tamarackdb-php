@@ -6,16 +6,17 @@ namespace TamarackDB\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use TamarackDB\Client;
-use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ConcurrencyException;
+use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\StoreChangedException;
-use TamarackDB\Exception\TicketNotActiveException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
+use TamarackDB\Exception\TransactionNotFoundException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Projection\ProjectionWrites;
@@ -27,7 +28,7 @@ use TamarackDB\Query\Query;
 
 final class ClientTest extends TestCase
 {
-    private const string TICKET = 'a045ad63-5d4b-4847-8eb9-fbddb4e2d65b';
+    private const string TX = '7d1e4b2a-3c5f-4e6d-9a8b-0c1d2e3f4a5b';
 
     private FakeTransport $transport;
 
@@ -41,20 +42,18 @@ final class ClientTest extends TestCase
 
     public function testBeginTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]));
+        $this->transport->push(Responses::json(['txId' => self::TX]));
 
         $this->client->beginTransaction();
 
-        self::assertSame(self::TICKET, $this->client->getTicket());
         self::assertTrue($this->client->inTransaction());
         self::assertSame('POST', $this->transport->requests[0]['method']);
-        self::assertSame('/begin', $this->transport->requests[0]['path']);
+        self::assertSame('/tx', $this->transport->requests[0]['path']);
     }
 
     public function testBeginTransactionTwice(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]));
-        $this->client->beginTransaction();
+        $this->begin();
 
         $this->expectException(TransactionAlreadyActiveException::class);
         $this->client->beginTransaction();
@@ -62,27 +61,64 @@ final class ClientTest extends TestCase
 
     public function testCommit(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
-        $this->client->beginTransaction();
+        $this->begin(Responses::noContent());
 
         $this->client->commit();
 
         self::assertFalse($this->client->inTransaction());
-        self::assertNull($this->client->getTicket());
-        self::assertSame('/commit', $this->transport->requests[1]['path']);
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+        self::assertSame(['POST', '/tx/' . self::TX . '/commit'], $this->request(1));
+    }
+
+    public function testACommitErrorEndsTheTransaction(): void
+    {
+        $this->begin(Responses::error(409, 'ConcurrencyException', 'conditions[0] no longer holds'));
+
+        try {
+            $this->client->commit();
+            self::fail('expected a ConcurrencyException');
+        } catch (ConcurrencyException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
+    }
+
+    public function testACommitTransportFailureEndsTheTransaction(): void
+    {
+        $this->begin(new TransportException('connection dropped'));
+
+        try {
+            $this->client->commit();
+            self::fail('expected a TransportException');
+        } catch (TransportException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
     }
 
     public function testRollback(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
-        $this->client->beginTransaction();
+        $this->begin(Responses::noContent());
 
         $this->client->rollback();
 
         self::assertFalse($this->client->inTransaction());
-        self::assertSame('/rollback', $this->transport->requests[1]['path']);
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+        self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(1));
+    }
+
+    public function testRollbackWithoutATransaction(): void
+    {
+        $this->client->rollback();
+
+        self::assertSame([], $this->transport->requests);
+    }
+
+    public function testRollbackNeverThrows(): void
+    {
+        $this->begin(new TransportException('refused'));
+
+        $this->client->rollback();
+
+        self::assertFalse($this->client->inTransaction());
     }
 
     public function testCommitWithoutATransaction(): void
@@ -108,12 +144,11 @@ final class ClientTest extends TestCase
 
         $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2), false);
 
-        self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
+        self::assertSame([1, 2, 3], array_map(self::sequence(...), $events));
         self::assertSame(['query' => 'all', 'limit' => 2], $this->transport->body(0));
         self::assertSame(['query' => 'all', 'limit' => 2, 'afterSequence' => 2], $this->transport->body(1));
         self::assertSame('QUERY', $this->transport->requests[0]['method']);
         self::assertSame('/events', $this->transport->requests[0]['path']);
-        self::assertFalse($this->transport->requests[0]['drainOnAbort']);
     }
 
     public function testReadEventsParsesEvents(): void
@@ -122,6 +157,7 @@ final class ClientTest extends TestCase
 
         $event = iterator_to_array($this->client->readEvents(new AllEvents()), false)[0];
 
+        self::assertInstanceOf(Event::class, $event);
         self::assertSame(7, $event->sequence);
         self::assertSame('2026-09-01T14:23:05.123456+00:00', $event->time->format('Y-m-d\TH:i:s.uP'));
         self::assertSame('user-created', $event->type);
@@ -189,7 +225,7 @@ final class ClientTest extends TestCase
         $seen = [];
         try {
             foreach ($this->client->readEvents(new AllEvents(), pageSize: 2) as $event) {
-                $seen[] = $event->sequence;
+                $seen[] = self::sequence($event);
             }
             self::fail('expected a StoreChangedException');
         } catch (StoreChangedException) {
@@ -215,7 +251,7 @@ final class ClientTest extends TestCase
 
         $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
-        self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
+        self::assertSame([1, 2, 3], array_map(self::sequence(...), $events));
         self::assertSame(2, $this->transport->body(1)['afterSequence']);
     }
 
@@ -229,7 +265,7 @@ final class ClientTest extends TestCase
 
         $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
-        self::assertSame([1, 2], array_map(static fn(Event $e): int => $e->sequence, $events));
+        self::assertSame([1, 2], array_map(self::sequence(...), $events));
         self::assertSame(1, $this->transport->body(1)['afterSequence']);
         self::assertSame(1, $this->transport->body(2)['afterSequence']);
     }
@@ -334,106 +370,117 @@ final class ClientTest extends TestCase
 
     public function testAppend(): void
     {
-        $this->transport->push(
-            Responses::json(['ticket' => self::TICKET]),
-            Responses::json(['events' => [['sequence' => 5, 'time' => '2026-09-01T14:25:00.000000Z']]]),
-        );
-        $this->client->beginTransaction();
+        $this->begin(Responses::json(['time' => '2026-10-03T21:11:07.554310Z']));
 
-        $appended = $this->client->appendEvents(
-            [new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')],
-            new AppendCondition(new Query(Identifier::is('userId', '123')), 4),
-        );
+        $time = $this->client->appendEvents([new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')]);
 
-        self::assertCount(1, $appended);
-        self::assertSame(5, $appended[0]->sequence);
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+        self::assertSame('2026-10-03T21:11:07.554310+00:00', $time->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame(['POST', '/tx/' . self::TX . '/events'], $this->request(1));
         self::assertSame('application/json', $this->transport->requests[1]['headers']['Content-Type']);
-        self::assertSame([
-            'events' => [['type' => 'user-renamed', 'identifiers' => ['userId' => '123'], 'payload' => 'x']],
-            'condition' => [
-                'failIfEventsMatch' => [['identifiers' => [['name' => 'userId', 'value' => '123']]]],
-                'afterSequence' => 4,
-            ],
-        ], $this->transport->body(1));
+        self::assertSame(
+            ['events' => [['type' => 'user-renamed', 'identifiers' => ['userId' => '123'], 'payload' => 'x']]],
+            $this->transport->body(1),
+        );
     }
 
-    public function testAnEmptyConditionIsLeftOut(): void
+    public function testAppendNoEvent(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['events' => []]));
+        $this->begin(Responses::json(['time' => '2026-10-03T21:11:07.554310Z']));
 
-        $this->client->beginTransaction();
-        $this->client->appendEvents([], new AppendCondition());
+        $this->client->appendEvents([]);
 
         self::assertSame(['events' => []], $this->transport->body(1));
     }
 
-    public function testATicketReadDrainsOnAbort(): void
+    public function testATransactionRead(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::page([1, 2], false));
-        $this->client->beginTransaction();
+        $this->begin(Responses::txRead([Responses::eventLine(3), self::pendingLine()]));
 
-        foreach ($this->client->readEvents(new AllEvents()) as $event) {
-            break;
-        }
+        $events = iterator_to_array($this->client->readEvents(new Query(Identifier::is('userId', '3'))), false);
 
-        self::assertTrue($this->transport->requests[1]['drainOnAbort']);
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
+        self::assertCount(2, $events);
+        self::assertInstanceOf(Event::class, $events[0]);
+        self::assertSame(3, $events[0]->sequence);
+        self::assertInstanceOf(PendingEvent::class, $events[1]);
+        self::assertSame('2026-10-03T21:11:05.123456+00:00', $events[1]->time->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame('seat-reserved', $events[1]->type);
+        self::assertSame(['showId' => 's1'], $events[1]->identifiers);
+        self::assertSame('{}', $events[1]->payload);
+        self::assertSame(['QUERY', '/tx/' . self::TX . '/events'], $this->request(1));
+        self::assertSame(['query' => [['identifiers' => [['name' => 'userId', 'value' => '3']]]]], $this->transport->body(1));
+        self::assertTrue($this->client->inTransaction());
     }
 
-    public function testATicketReadIsNotResumed(): void
+    public function testATransactionReadIsSentRightAway(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), new CutStream([Responses::eventLine(1)]));
-        $this->client->beginTransaction();
+        $this->begin(Responses::txRead([]));
+
+        $events = $this->client->readEvents(new NoEvents());
+
+        self::assertCount(2, $this->transport->requests);
+        self::assertSame(['query' => 'none'], $this->transport->body(1));
+        self::assertSame([], iterator_to_array($events, false));
+        self::assertNull($events->storeId());
+    }
+
+    public function testATransactionReadTakesNoPosition(): void
+    {
+        $this->begin();
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->client->readEvents(new AllEvents(), afterSequence: 3);
+    }
+
+    public function testATransactionReadCutShortAbandonsTheTransaction(): void
+    {
+        $this->begin(new CutStream([Responses::eventLine(1), Responses::eventLine(2)], []), Responses::noContent());
 
         try {
-            iterator_to_array($this->client->readEvents(new AllEvents()));
+            $this->client->readEvents(new AllEvents());
             self::fail('expected a TransportException');
         } catch (TransportException) {
         }
 
-        self::assertTrue($this->client->inTransaction());
+        self::assertFalse($this->client->inTransaction());
+        self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(2));
     }
 
-    public function testAReadKeepsItsTicket(): void
+    public function testATransactionReadWithoutItsTrailer(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent(), Responses::error(410, 'TicketNotActive'));
-        $this->client->beginTransaction();
-        $events = $this->client->readEvents(new AllEvents());
-        $this->client->commit();
+        $this->begin(new Response(200, [], Responses::eventLine(1) . "\n"), Responses::noContent());
 
         try {
-            iterator_to_array($events);
-            self::fail('expected a TicketNotActiveException');
-        } catch (TicketNotActiveException) {
+            $this->client->readEvents(new AllEvents());
+            self::fail('expected a TransportException');
+        } catch (TransportException) {
         }
 
-        self::assertSame(self::TICKET, $this->transport->requests[2]['headers']['X-Tamarackdb-Ticket']);
+        self::assertFalse($this->client->inTransaction());
+        self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(2));
     }
 
-    public function testAReadErrorEndsTheTransaction(): void
+    public function testATransactionReadErrorEndsTheTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(400, 'InvalidRequest'));
-        $this->client->beginTransaction();
+        $this->begin(Responses::error(400, 'InvalidRequest', 'a read while a condition is open'));
 
         try {
-            iterator_to_array($this->client->readEvents(new AllEvents()));
+            $this->client->readEvents(new AllEvents());
             self::fail('expected an InvalidRequestException');
         } catch (InvalidRequestException) {
         }
 
         self::assertFalse($this->client->inTransaction());
+        self::assertCount(2, $this->transport->requests);
     }
 
     public function testAServerErrorEndsTheTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(409, 'ConcurrencyException'));
-        $this->client->beginTransaction();
+        $this->begin(Responses::error(404, 'TransactionNotFound'));
 
         try {
             $this->client->appendEvents([new NewEvent('a')]);
-            self::fail('expected a ConcurrencyException');
-        } catch (ConcurrencyException) {
+            self::fail('expected a TransactionNotFoundException');
+        } catch (TransactionNotFoundException) {
         }
 
         self::assertFalse($this->client->inTransaction());
@@ -443,8 +490,7 @@ final class ClientTest extends TestCase
 
     public function testATransportFailureKeepsTheTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), new TransportException('refused'));
-        $this->client->beginTransaction();
+        $this->begin(new TransportException('refused'));
 
         try {
             $this->client->appendEvents([new NewEvent('a')]);
@@ -457,45 +503,58 @@ final class ClientTest extends TestCase
 
     public function testAMissingProjectionKeepsTheTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(404, 'ProjectionNotFound'));
-        $this->client->beginTransaction();
+        $this->begin(Responses::error(404, 'ProjectionNotFound'));
 
         self::assertNull($this->client->getProjection('a', '1'));
         self::assertTrue($this->client->inTransaction());
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
     }
 
     public function testWriteProjectionsInsideATransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::json(['create' => [['version' => 'c1']]]));
-        $this->client->beginTransaction();
+        $this->begin();
 
+        $this->expectException(TransactionAlreadyActiveException::class);
         $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x'));
-
-        self::assertSame(self::TICKET, $this->transport->requests[1]['headers']['X-Tamarackdb-Ticket']);
     }
 
     public function testResetForgetsTheTransaction(): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent());
-        $this->client->beginTransaction();
+        $this->begin(Responses::noContent());
 
         $this->client->reset();
 
         self::assertFalse($this->client->inTransaction());
     }
 
-    public function testCommitOnAnInactiveTicket(): void
+    private function begin(Response|\Throwable|CutStream ...$then): void
     {
-        $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::error(410, 'TicketNotActive'));
+        $this->transport->push(Responses::json(['txId' => self::TX]), ...$then);
         $this->client->beginTransaction();
+    }
 
-        try {
-            $this->client->commit();
-            self::fail('expected a TicketNotActiveException');
-        } catch (TicketNotActiveException) {
-        }
+    /**
+     * @return array{string, string}
+     */
+    private function request(int $index): array
+    {
+        return [$this->transport->requests[$index]['method'], $this->transport->requests[$index]['path']];
+    }
 
-        self::assertFalse($this->client->inTransaction());
+    private static function sequence(Event|PendingEvent $event): int
+    {
+        self::assertInstanceOf(Event::class, $event);
+
+        return $event->sequence;
+    }
+
+    private static function pendingLine(): string
+    {
+        return json_encode([
+            'time' => '2026-10-03T21:11:05.123456Z',
+            'type' => 'seat-reserved',
+            'identifiers' => ['showId' => 's1'],
+            'metadata' => [],
+            'payload' => '{}',
+        ], JSON_THROW_ON_ERROR);
     }
 }

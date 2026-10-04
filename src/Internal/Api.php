@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace TamarackDB\Internal;
 
-use TamarackDB\Event\AppendCondition;
-use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\Events;
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ProjectionNotFoundException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
@@ -123,30 +122,62 @@ final class Api
     }
 
     /**
-     * @param list<NewEvent> $events
-     *
-     * @return list<AppendedEvent>
+     * Begins a transaction, and returns its txId.
      */
-    public function appendEvents(array $events, ?AppendCondition $condition): array
+    public function begin(): string
     {
-        $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), array_values($events))];
-        if ($condition !== null && ($array = $condition->toArray()) !== []) {
-            $request['condition'] = $array;
-        }
-        $data = Json::decodeObject($this->call('POST', '/events', $request)->body);
-        if (!\is_array($data['events'] ?? null)) {
-            throw new ProtocolException('invalid POST /events response');
+        $data = Json::decodeObject($this->call('POST', '/tx')->body);
+        if (!\is_string($data['txId'] ?? null) || $data['txId'] === '') {
+            throw new ProtocolException('invalid POST /tx response');
         }
 
-        $appended = [];
-        foreach ($data['events'] as $event) {
-            if (!\is_array($event) || !\is_int($event['sequence'] ?? null)) {
-                throw new ProtocolException('invalid POST /events response');
+        return $data['txId'];
+    }
+
+    /**
+     * Reads the events of a decision in a transaction: the committed
+     * events, then the pending ones.
+     *
+     * @return \Generator<int, Event|PendingEvent>
+     *
+     * @throws TransportException when the response ends without its trailer
+     */
+    public function readTxEvents(string $txId, Query|AllEvents|NoEvents $query): \Generator
+    {
+        $path = self::txPath($txId) . '/events';
+        $lines = $this->transport->stream('QUERY', $path, $this->headers(true), Json::encode(['query' => self::query($query)]));
+        foreach ($lines as $line) {
+            $data = Json::decodeObject($line);
+            if (\array_key_exists('end', $data)) {
+                return;
             }
-            $appended[] = new AppendedEvent($event['sequence'], Time::parse($event['time'] ?? null));
+            yield \array_key_exists('sequence', $data) ? Event::fromArray($data) : PendingEvent::fromArray($data);
         }
 
-        return $appended;
+        throw new TransportException(\sprintf('QUERY %s: the response ended without its trailer', $path));
+    }
+
+    /**
+     * Writes events in a transaction, and returns the time they all carry.
+     *
+     * @param list<NewEvent> $events
+     */
+    public function writeTxEvents(string $txId, array $events): \DateTimeImmutable
+    {
+        $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), $events)];
+        $data = Json::decodeObject($this->call('POST', self::txPath($txId) . '/events', $request)->body);
+
+        return Time::parse($data['time'] ?? null);
+    }
+
+    public function commit(string $txId): void
+    {
+        $this->call('POST', self::txPath($txId) . '/commit');
+    }
+
+    public function abandon(string $txId): void
+    {
+        $this->call('DELETE', self::txPath($txId));
     }
 
     public function getProjection(string $type, string $id): ?Projection
@@ -173,6 +204,11 @@ final class Api
         }
 
         return new ProjectionWriteResult(self::versions($projections, 'create'), self::versions($projections, 'replace'));
+    }
+
+    private static function txPath(string $txId): string
+    {
+        return '/tx/' . rawurlencode($txId);
     }
 
     /**

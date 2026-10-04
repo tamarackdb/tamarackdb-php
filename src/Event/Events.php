@@ -7,14 +7,17 @@ namespace TamarackDB\Event;
 use TamarackDB\Exception\StoreChangedException;
 
 /**
- * The events of one read, oldest first. Pages are fetched as the events
- * are iterated, and they can be iterated only once.
+ * The events of one read, oldest first. They can be iterated only once.
  *
- * @implements \IteratorAggregate<int, Event>
+ * Outside a transaction, every event is an Event, and pages are fetched as
+ * the events are iterated. Inside one, the committed events (Event) come
+ * first, then the events written earlier in the transaction (PendingEvent).
+ *
+ * @implements \IteratorAggregate<int, Event|PendingEvent>
  */
 final class Events implements \IteratorAggregate
 {
-    /** @var \Generator<int, Event> */
+    /** @var \Generator<int, Event|PendingEvent> */
     private readonly \Generator $events;
 
     /**
@@ -22,8 +25,8 @@ final class Events implements \IteratorAggregate
      *
      * @param string|null $storeId the store ID every page must come from, or
      *                             null to take the one of the first page
-     * @param \Closure(self): \Generator<int, Event> $read reads the pages,
-     *                                                     and passes the store ID of each to receiveStoreId()
+     * @param \Closure(self): \Generator<int, Event|PendingEvent> $read reads
+     *                                                                  the events, and passes the store ID of each page to receiveStoreId()
      */
     public function __construct(
         private ?string $storeId,
@@ -33,7 +36,7 @@ final class Events implements \IteratorAggregate
     }
 
     /**
-     * @return \Generator<int, Event>
+     * @return \Generator<int, Event|PendingEvent>
      */
     public function getIterator(): \Generator
     {
@@ -43,7 +46,8 @@ final class Events implements \IteratorAggregate
     /**
      * The store ID the events come from, or null before the first page
      * arrived. Keep it with the last Sequence Position you read, and pass
-     * both to the next read.
+     * both to the next read. Always null inside a transaction: the server
+     * keeps the store ID with the transaction.
      */
     public function storeId(): ?string
     {
