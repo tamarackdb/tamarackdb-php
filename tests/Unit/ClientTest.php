@@ -135,13 +135,10 @@ final class ClientTest extends TestCase
         iterator_to_array($this->client->readEvents(
             new Query(EventType::in('user-created')),
             afterSequence: 10,
-            from: new \DateTimeImmutable('2026-01-01T01:00:00+01:00'),
-            before: new \DateTimeImmutable('2026-02-01T00:00:00.5Z'),
         ));
 
         self::assertSame([
             'query' => [['types' => ['user-created']]],
-            'time' => ['from' => '2026-01-01T00:00:00.000000Z', 'before' => '2026-02-01T00:00:00.500000Z'],
             'afterSequence' => 10,
         ], $this->transport->body(0));
     }

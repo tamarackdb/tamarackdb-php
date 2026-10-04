@@ -11,13 +11,6 @@ use TamarackDB\Exception\ProtocolException;
  */
 final class Time
 {
-    public static function format(\DateTimeInterface $time): string
-    {
-        return \DateTimeImmutable::createFromInterface($time)
-            ->setTimezone(new \DateTimeZone('UTC'))
-            ->format('Y-m-d\TH:i:s.u\Z');
-    }
-
     public static function parse(mixed $value): \DateTimeImmutable
     {
         if (!\is_string($value)) {

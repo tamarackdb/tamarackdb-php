@@ -9,7 +9,7 @@ use TamarackDB\Exception\TransportException;
 
 /**
  * Sends HTTP requests to one TamarackDB server. The client adds the
- * TamarackDB headers (ticket, content type); a transport adds whatever its
+ * TamarackDB headers (content type); a transport adds whatever its
  * connection needs, such as the Bearer token.
  */
 interface Transport
@@ -34,8 +34,7 @@ interface Transport
      *
      * When the consumer stops early, the connection is closed, unless
      * $drainOnAbort is true: then the rest of the response is read and
-     * discarded first. A read with a ticket needs this, since a closed
-     * connection makes the server roll the transaction back.
+     * discarded first.
      *
      * @param array<string, string> $headers
      *

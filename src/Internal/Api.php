@@ -14,27 +14,22 @@ use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Http\Transport;
-use TamarackDB\Middleware\AppendHandler;
-use TamarackDB\Middleware\ReadHandler;
-use TamarackDB\Middleware\ReadRequest;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\Query;
 
 /**
- * The HTTP calls of Client, with a ticket inside a transaction and
- * without one outside.
+ * The HTTP calls of Client.
  *
  * @internal
  */
-final class Api implements AppendHandler, ReadHandler
+final class Api
 {
-    public const string TICKET_HEADER = 'X-Tamarackdb-Ticket';
-
     public const string VERSION_HEADER = 'X-Tamarackdb-Version';
 
     /**
-     * How many times in a row a read without a ticket resumes a page that
+     * How many times in a row a read resumes a page that
      * was cut short, without getting any new event, before giving up.
      */
     private const int MAX_RESUME_ATTEMPTS = 3;
@@ -48,10 +43,10 @@ final class Api implements AppendHandler, ReadHandler
      *
      * @param array<string, mixed>|null $json
      */
-    public function call(string $method, string $path, ?string $ticket = null, ?array $json = null): Response
+    public function call(string $method, string $path, ?array $json = null): Response
     {
         $body = $json === null ? null : Json::encode($json);
-        $response = $this->transport->send($method, $path, $this->headers($ticket, $body !== null), $body);
+        $response = $this->transport->send($method, $path, $this->headers($body !== null), $body);
         if ($response->statusCode >= 400) {
             throw ServerException::fromResponse($response);
         }
@@ -60,21 +55,13 @@ final class Api implements AppendHandler, ReadHandler
     }
 
     /**
-     * The innermost layer of the read chain.
+     * @return \Generator<int, Event>
      */
-    public function readEvents(ReadRequest $request): \Generator
+    public function readEvents(?Query $query, ?int $afterSequence, ?int $pageSize): \Generator
     {
-        $ticket = $request->ticket;
-        $afterSequence = $request->afterSequence;
-        $body = ['query' => $request->query?->toArray() ?? '*'];
-        if ($request->from !== null || $request->before !== null) {
-            $body['time'] = array_filter(
-                ['from' => $request->from === null ? null : Time::format($request->from), 'before' => $request->before === null ? null : Time::format($request->before)],
-                static fn(?string $bound): bool => $bound !== null,
-            );
-        }
-        if ($request->pageSize !== null) {
-            $body['limit'] = $request->pageSize;
+        $body = ['query' => $query?->toArray() ?? '*'];
+        if ($pageSize !== null) {
+            $body['limit'] = $pageSize;
         }
 
         $failures = 0;
@@ -85,7 +72,7 @@ final class Api implements AppendHandler, ReadHandler
             $hasMore = null;
             $progress = false;
             try {
-                $lines = $this->transport->stream('QUERY', '/events', $this->headers($ticket, true), Json::encode($body), $ticket !== null);
+                $lines = $this->transport->stream('QUERY', '/events', $this->headers(true), Json::encode($body));
                 foreach ($lines as $line) {
                     $data = Json::decodeObject($line);
                     if (\array_key_exists('hasMore', $data)) {
@@ -101,10 +88,8 @@ final class Api implements AppendHandler, ReadHandler
                     throw new TransportException('QUERY /events: the page ended without its trailer');
                 }
             } catch (TransportException $e) {
-                // With a ticket, a page cut short means the transaction was
-                // rolled back: there's nothing to resume.
                 $failures = $progress ? 1 : $failures + 1;
-                if ($ticket !== null || $failures >= self::MAX_RESUME_ATTEMPTS) {
+                if ($failures >= self::MAX_RESUME_ATTEMPTS) {
                     throw $e;
                 }
                 usleep(100_000 * $failures);
@@ -118,15 +103,17 @@ final class Api implements AppendHandler, ReadHandler
     }
 
     /**
-     * The innermost layer of the append chain.
+     * @param list<NewEvent> $events
+     *
+     * @return list<AppendedEvent>
      */
-    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket): array
+    public function appendEvents(array $events, ?AppendCondition $condition): array
     {
         $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), array_values($events))];
         if ($condition !== null && ($array = $condition->toArray()) !== []) {
             $request['condition'] = $array;
         }
-        $data = Json::decodeObject($this->call('POST', '/events', $ticket, $request)->body);
+        $data = Json::decodeObject($this->call('POST', '/events', $request)->body);
         if (!\is_array($data['events'] ?? null)) {
             throw new ProtocolException('invalid POST /events response');
         }
@@ -142,10 +129,10 @@ final class Api implements AppendHandler, ReadHandler
         return $appended;
     }
 
-    public function getProjection(?string $ticket, string $type, string $id): ?Projection
+    public function getProjection(string $type, string $id): ?Projection
     {
         try {
-            $response = $this->call('GET', '/projections/' . rawurlencode($type) . '/' . rawurlencode($id), $ticket);
+            $response = $this->call('GET', '/projections/' . rawurlencode($type) . '/' . rawurlencode($id));
         } catch (ProjectionNotFoundException) {
             return null;
         }
@@ -157,9 +144,9 @@ final class Api implements AppendHandler, ReadHandler
         return new Projection($type, $id, $version, $response->body);
     }
 
-    public function writeProjections(?string $ticket, ProjectionWrites $writes): ProjectionWriteResult
+    public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        $data = Json::decodeObject($this->call('POST', '/projections', $ticket, $writes->toArray())->body);
+        $data = Json::decodeObject($this->call('POST', '/projections', $writes->toArray())->body);
 
         return new ProjectionWriteResult(self::versions($data, 'create'), self::versions($data, 'replace'));
     }
@@ -167,17 +154,9 @@ final class Api implements AppendHandler, ReadHandler
     /**
      * @return array<string, string>
      */
-    private function headers(?string $ticket, bool $json): array
+    private function headers(bool $json): array
     {
-        $headers = [];
-        if ($json) {
-            $headers['Content-Type'] = 'application/json';
-        }
-        if ($ticket !== null) {
-            $headers[self::TICKET_HEADER] = $ticket;
-        }
-
-        return $headers;
+        return $json ? ['Content-Type' => 'application/json'] : [];
     }
 
     /**

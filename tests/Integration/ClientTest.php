@@ -261,14 +261,6 @@ final class ClientTest extends TestCase
         $this->client->appendEvents([new NewEvent('user-created')]);
     }
 
-    public function testDebug(): void
-    {
-        $debug = $this->client->debug();
-
-        self::assertArrayHasKey('write', $debug);
-        self::assertArrayHasKey('read', $debug);
-    }
-
     private function appendUsers(int $count): void
     {
         $this->client->beginTransaction();

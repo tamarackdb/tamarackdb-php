@@ -13,18 +13,10 @@ use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
-use TamarackDB\Exception\TransactionQueueFullException;
 use TamarackDB\Http\CurlTransport;
 use TamarackDB\Http\Transport;
 use TamarackDB\Internal\Api;
-use TamarackDB\Internal\AppendDelegator;
 use TamarackDB\Internal\Json;
-use TamarackDB\Internal\ReadDelegator;
-use TamarackDB\Middleware\AppendHandler;
-use TamarackDB\Middleware\AppendMiddleware;
-use TamarackDB\Middleware\ReadHandler;
-use TamarackDB\Middleware\ReadMiddleware;
-use TamarackDB\Middleware\ReadRequest;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
@@ -42,20 +34,11 @@ final class Client
 {
     private readonly Api $api;
 
-    private AppendHandler $appendHandler;
-
-    private ReadHandler $readHandler;
-
-    /** @var list<AppendMiddleware|ReadMiddleware> innermost first */
-    private array $middlewares = [];
-
     private ?string $ticket = null;
 
     public function __construct(Transport $transport)
     {
         $this->api = new Api($transport);
-        $this->appendHandler = $this->api;
-        $this->readHandler = $this->api;
     }
 
     /**
@@ -89,28 +72,6 @@ final class Client
     }
 
     /**
-     * Adds a middleware around every append, every read, or both, when it
-     * implements both interfaces. The last one added is the outermost
-     * layer: it runs first.
-     */
-    public function addMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
-    {
-        $this->middlewares[] = $middleware;
-        $this->chainMiddlewares();
-    }
-
-    /**
-     * Adds a middleware as the innermost layer, closest to the server,
-     * whatever was added before or is added after with addMiddleware(). It
-     * sees events exactly as they are sent and received.
-     */
-    public function addInnerMiddleware(AppendMiddleware|ReadMiddleware $middleware): void
-    {
-        array_unshift($this->middlewares, $middleware);
-        $this->chainMiddlewares();
-    }
-
-    /**
      * Opens a transaction. Waits for its turn when another one is active.
      * From then on, readEvents(),
      * getProjection(), and writeProjections() run inside it, until
@@ -118,7 +79,6 @@ final class Client
      *
      * @throws TransactionAlreadyActiveException when this client already has a transaction
      * @throws TimeoutException when the turn didn't come in time
-     * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function beginTransaction(): void
     {
@@ -142,28 +102,18 @@ final class Client
         return $this->ticket !== null;
     }
 
-    /**
-     * The ticket of the active transaction, or null outside one. Log it
-     * with the command it belongs to: when a transaction expires, the
-     * server logs a warning with that ticket.
-     */
-    public function getTicket(): ?string
-    {
-        return $this->ticket;
-    }
-
     public function commit(): void
     {
         $ticket = $this->requireTicket();
         $this->ticket = null;
-        $this->api->call('POST', '/commit', $ticket);
+        $this->api->call('POST', '/commit');
     }
 
     public function rollback(): void
     {
         $ticket = $this->requireTicket();
         $this->ticket = null;
-        $this->api->call('POST', '/rollback', $ticket);
+        $this->api->call('POST', '/rollback');
     }
 
     /**
@@ -183,8 +133,6 @@ final class Client
      * again later with it as $afterSequence.
      *
      * @param int|null $afterSequence only events after this Sequence Position
-     * @param \DateTimeInterface|null $from only events appended at or after this time
-     * @param \DateTimeInterface|null $before only events appended before this time
      * @param int|null $pageSize events per request, or null for the server's default
      *
      * @return \Generator<int, Event>
@@ -192,12 +140,10 @@ final class Client
     public function readEvents(
         ?Query $query,
         ?int $afterSequence = null,
-        ?\DateTimeInterface $from = null,
-        ?\DateTimeInterface $before = null,
         ?int $pageSize = null,
     ): \Generator {
         $ticket = $this->ticket;
-        $events = $this->readHandler->readEvents(new ReadRequest($query, $afterSequence, $from, $before, $pageSize, $ticket));
+        $events = $this->api->readEvents($query, $afterSequence, $pageSize);
 
         return $ticket === null ? $events : $this->endOnServerError($ticket, $events);
     }
@@ -218,7 +164,7 @@ final class Client
     {
         $ticket = $this->requireTicket();
 
-        return $this->run($ticket, fn(): array => $this->appendHandler->appendEvents($events, $condition, $ticket));
+        return $this->run($ticket, fn(): array => $this->api->appendEvents($events, $condition));
     }
 
     /**
@@ -231,10 +177,10 @@ final class Client
     {
         $ticket = $this->ticket;
         if ($ticket === null) {
-            return $this->api->getProjection(null, $type, $id);
+            return $this->api->getProjection($type, $id);
         }
 
-        return $this->run($ticket, fn(): ?Projection => $this->api->getProjection($ticket, $type, $id));
+        return $this->run($ticket, fn(): ?Projection => $this->api->getProjection($type, $id));
     }
 
     /**
@@ -244,16 +190,15 @@ final class Client
      * queue and commits on its own.
      *
      * @throws TimeoutException when the turn and the write didn't end in time
-     * @throws TransactionQueueFullException outside a transaction, when too many requests are already waiting
      */
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
         $ticket = $this->ticket;
         if ($ticket === null) {
-            return $this->api->writeProjections(null, $writes);
+            return $this->api->writeProjections($writes);
         }
 
-        return $this->run($ticket, fn(): ProjectionWriteResult => $this->api->writeProjections($ticket, $writes));
+        return $this->run($ticket, fn(): ProjectionWriteResult => $this->api->writeProjections($writes));
     }
 
     /**
@@ -261,7 +206,6 @@ final class Client
      * call waits for its turn in the server's queue.
      *
      * @throws TimeoutException when the turn and the delete didn't end in time
-     * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function deleteProjectionsByType(string $type): void
     {
@@ -273,7 +217,6 @@ final class Client
      * for its turn in the server's queue.
      *
      * @throws TimeoutException when the turn and the delete didn't end in time
-     * @throws TransactionQueueFullException when too many requests are already waiting
      */
     public function deleteAllProjections(): void
     {
@@ -288,17 +231,6 @@ final class Client
         }
 
         return new Health($data['status'], $data['version']);
-    }
-
-    /**
-     * The server's current state (active transaction, queue, connection
-     * pools), as GET /debug returns it.
-     *
-     * @return array<string, mixed>
-     */
-    public function debug(): array
-    {
-        return Json::decodeObject($this->api->call('GET', '/debug')->body);
     }
 
     /**
@@ -353,20 +285,6 @@ final class Client
     {
         if ($this->ticket === $ticket) {
             $this->ticket = null;
-        }
-    }
-
-    private function chainMiddlewares(): void
-    {
-        $this->appendHandler = $this->api;
-        $this->readHandler = $this->api;
-        foreach ($this->middlewares as $middleware) {
-            if ($middleware instanceof AppendMiddleware) {
-                $this->appendHandler = new AppendDelegator($middleware, $this->appendHandler);
-            }
-            if ($middleware instanceof ReadMiddleware) {
-                $this->readHandler = new ReadDelegator($middleware, $this->readHandler);
-            }
         }
     }
 
