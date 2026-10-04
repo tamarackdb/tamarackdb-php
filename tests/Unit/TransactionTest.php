@@ -163,9 +163,9 @@ final class TransactionTest extends TestCase
     {
         $this->begin(Responses::json(['time' => '2026-10-03T21:11:07.554310Z']));
 
-        $time = $this->tx->appendEvents([new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')]);
+        $result = $this->tx->appendEvents([new NewEvent('user-renamed', ['userId' => '123'], payload: 'x')]);
 
-        self::assertSame('2026-10-03T21:11:07.554310+00:00', $time->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame('2026-10-03T21:11:07.554310+00:00', $result->time->format('Y-m-d\TH:i:s.uP'));
         self::assertSame(['POST', '/tx/' . self::TX . '/events'], $this->request(1));
         self::assertSame('application/json', $this->transport->requests[1]['headers']['Content-Type']);
         self::assertSame(

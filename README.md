@@ -55,10 +55,10 @@ try {
     foreach ($tx->readEvents(new Query(Identifier::is('userId', $userId))) as $event) {
         // Build your decision model from $event.
     }
-    $time = $tx->appendEvents([
+    $result = $tx->appendEvents([
         new NewEvent('user-renamed', ['userId' => $userId], ['tenantId' => 'acme'], json_encode(['name' => $name])),
     ]);
-    // Give $time to the events before your event handlers react to them.
+    // Give $result->time to the events before your event handlers react to them.
 
     // Projections, once the events are written.
     $tx->saveProjection('user-profile', $userId, json_encode(['name' => $name]));
@@ -171,15 +171,15 @@ them the same way.
 ## Writing events
 
 ```php
-$time = $tx->appendEvents([
+$result = $tx->appendEvents([
     new NewEvent('user-created', ['userId' => '123'], ['tenantId' => 'acme'], '{"name":"Ada"}'),
 ]);
 ```
 
 - The write closes the read before it. `appendEvents([])` is the decision
   to write nothing, and the commit still checks it.
-- `$time` is the time every event of the write carries, and keeps once
-  committed. The events get their Sequence Position at commit.
+- `$result->time` is the time every event of the write carries, and keeps
+  once committed. The events get their Sequence Position at commit.
 - The payload is an opaque string: encode it as you like (JSON, XML, ...).
 
 ## Projections

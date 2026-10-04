@@ -46,7 +46,7 @@ final class ClientTest extends TestCase
         $time = $tx->appendEvents([
             new NewEvent('user-created', ['userId' => '123', 'courseId' => ['a', 'b']], ['tenantId' => 'acme'], '{"name":"Ada"}'),
             new NewEvent('user-created', ['userId' => '456']),
-        ]);
+        ])->time;
         $tx->commit();
 
         $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);

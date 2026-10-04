@@ -38,7 +38,7 @@ final class TransactionTest extends TestCase
 
         $tx = $this->client->beginTransaction();
         $tx->readEvents(new NoEvents());
-        $time = $tx->appendEvents([new NewEvent('seat-reserved', ['showId' => 's1', 'seat' => 'A5'], payload: '{}')]);
+        $time = $tx->appendEvents([new NewEvent('seat-reserved', ['showId' => 's1', 'seat' => 'A5'], payload: '{}')])->time;
         $events = $tx->readEvents(new Query(Identifier::is('showId', 's1')));
         $tx->appendEvents([]);
 

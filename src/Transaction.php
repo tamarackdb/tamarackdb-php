@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TamarackDB;
 
+use TamarackDB\Event\AppendResult;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Event\PendingEvent;
@@ -96,9 +97,9 @@ final class Transaction
     }
 
     /**
-     * Writes events, and returns the time they all carry: give it to each
-     * event before the code that reacts to it runs. The events get their
-     * Sequence Position at commit.
+     * Writes events. The result gives the time they all carry: give it to
+     * each event before the code that reacts to it runs. The events get
+     * their Sequence Position at commit.
      *
      * The write closes the read before it. An empty list is the decision
      * to write nothing.
@@ -108,9 +109,9 @@ final class Transaction
      * @throws NoActiveTransactionException when the transaction is over
      * @throws ServerException when the server refuses the write: the transaction is over
      */
-    public function appendEvents(array $events): \DateTimeImmutable
+    public function appendEvents(array $events): AppendResult
     {
-        return $this->run(fn(): \DateTimeImmutable => $this->api->writeTxEvents($this->id, array_values($events)));
+        return $this->run(fn(): AppendResult => $this->api->writeTxEvents($this->id, array_values($events)));
     }
 
     /**

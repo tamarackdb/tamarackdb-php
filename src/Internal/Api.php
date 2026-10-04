@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TamarackDB\Internal;
 
+use TamarackDB\Event\AppendResult;
 use TamarackDB\Event\Event;
 use TamarackDB\Event\Events;
 use TamarackDB\Event\NewEvent;
@@ -158,16 +159,16 @@ final class Api
     }
 
     /**
-     * Writes events in a transaction, and returns the time they all carry.
+     * Writes events in a transaction.
      *
      * @param list<NewEvent> $events
      */
-    public function writeTxEvents(string $txId, array $events): \DateTimeImmutable
+    public function writeTxEvents(string $txId, array $events): AppendResult
     {
         $request = ['events' => array_map(static fn(NewEvent $event): array => $event->toArray(), $events)];
         $data = Json::decodeObject($this->call('POST', self::txPath($txId) . '/events', $request)->body);
 
-        return Time::parse($data['time'] ?? null);
+        return new AppendResult(Time::parse($data['time'] ?? null));
     }
 
     public function commit(string $txId): void
