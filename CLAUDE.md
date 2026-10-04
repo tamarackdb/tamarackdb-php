@@ -52,11 +52,10 @@ auth on) from `TAMARACKDB_SERVER_BIN`, with `devMode` on, and are skipped
 without it. Each server gets a new database first, from the
 `tamarackdb-init` binary in the same directory. Build both from a clone of
 the server repo with `make build`, and check the version with `-version`:
-it must match the server version the README states.
-
-The matcher's tests replay `tests/Fixtures/query-cases.json`, a copy of the
-server repo's `testdata/query-cases.json`. Copy it again when the client
-moves to a new server version.
+it must match the server version the README states. A binary built before
+its commit was tagged reports another version (such as
+`v0.26.0-16-g5919c6d`). Build both again with
+`go build -ldflags "-X github.com/tamarackdb/tamarackdb/internal/buildinfo.Version=vX.Y.Z"`.
 
 Fix PHPStan errors at their cause. Don't add `@phpstan-ignore` comments,
 baseline entries, or casts just to silence one.

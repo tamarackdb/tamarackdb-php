@@ -3,9 +3,10 @@
 PHP client for [TamarackDB](https://tamarackdb.github.io/), an event store
 compliant with the [DCB specification](https://dcb.events/specification/).
 
-It covers the whole integration API: transactions, reading and appending
-events, Append Conditions, projections, and projection rebuilds. It is
-tested against TamarackDB v0.25.0.
+It covers the whole HTTP API: transactions, reading and writing events,
+projections, and projection rebuilds. It is a low-level client, meant to be
+used by an event sourcing framework or directly by an application. It is
+tested against TamarackDB v0.27.0.
 
 ## Requirements
 
@@ -31,91 +32,114 @@ $client = Client::http('http://127.0.0.1:8085', token: 'secret', timeout: 120.0)
 ```
 
 `timeout` is how long the client waits for a response (60 seconds by
-default). It includes the time a request waits for its turn in the server's
-queue: `beginTransaction()` when another transaction is active, and the
-projection rebuild calls below. Past it, the client throws a
-`TimeoutException`.
+default). It includes the time a write waits for its turn in the server's
+queue: a commit, `writeProjections()`, and the bulk deletes. Past it, the
+client throws a `TimeoutException`.
 
 ## Handling a command
 
-A command runs in one transaction: read, decide, append, let your event
-handlers react, write projections, commit. Only one transaction is active at
-a time, so keep it short and inside one request of your application.
-
-The client holds the transaction, like PDO: `beginTransaction()` opens it,
-and every call until `commit()` or `rollback()` runs inside it.
+A command runs in one transaction, which lives in the server. Each decision
+reads events, then writes its events, or none. Your event handlers react,
+your projections are read and written, and the commit writes everything at
+once, or nothing. How it works is in
+[Transactions](https://tamarackdb.github.io/docs/concepts/transactions/).
 
 ```php
-use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Query;
 
-$client->beginTransaction();
+$tx = $client->beginTransaction();
 try {
-    $query = new Query(Identifier::is('userId', $userId));
-
-    $last = null;
-    foreach ($client->readEvents($query) as $event) {
+    // One decision: one read, then one write.
+    foreach ($tx->readEvents(new Query(Identifier::is('userId', $userId))) as $event) {
         // Build your decision model from $event.
-        $last = $event->sequence;
     }
+    $time = $tx->appendEvents([
+        new NewEvent('user-renamed', ['userId' => $userId], ['tenantId' => 'acme'], json_encode(['name' => $name])),
+    ]);
+    // Give $time to the events before your event handlers react to them.
 
-    $client->appendEvents(
-        [new NewEvent('user-renamed', ['userId' => $userId], ['tenantId' => 'acme'], json_encode(['name' => $name]))],
-        new AppendCondition($query, $last),
-    );
+    // Projections, once the events are written.
+    $tx->saveProjection('user-profile', $userId, json_encode(['name' => $name]));
 
-    $client->commit();
+    $tx->commit();
 } catch (\Throwable $e) {
-    if ($client->inTransaction()) {
-        $client->rollback();
-    }
+    $tx->rollback();
     throw $e;
 }
 ```
 
-Log `$client->getTicket()` with the command it belongs to: when a
-transaction expires, the server logs a warning with that ticket.
-
-`beginTransaction()` throws a `TransactionAlreadyActiveException` when the
-client already has a transaction. `appendEvents()`, `commit()`, and
-`rollback()` throw a `NoActiveTransactionException` outside one.
-
-Any server error inside a transaction rolls it back on the server, except a
-missing projection. The client then drops the transaction:
-`inTransaction()` returns false. Begin a new one and run the whole command
-again. A transport failure leaves the transaction open on the client, so you
-can still call `rollback()`.
+- `beginTransaction()` returns the transaction. `$client->getTransaction()`
+  returns it too, while it's active, and `$client->inTransaction()` tells
+  whether there is one. A client holds at most one active transaction.
+- After a `ConcurrencyException` or a `TransactionNotFoundException`, run
+  the whole command again, in a new transaction.
+- Any server error ends the transaction, except a missing projection.
+  `$tx->isActive()` then returns false, and every call but `rollback()`
+  throws a `NoActiveTransactionException`. The same goes once the
+  transaction is committed or rolled back.
+- A transport failure leaves the transaction active on the client, since the
+  call may not have reached the server. Call `rollback()`.
+- `rollback()` never throws, and does nothing on a transaction that is
+  already over: it's safe in any error handler.
+- If a commit's response is lost, the commit can't be sent again. Read what
+  the transaction wrote, a projection for example, to know whether it
+  happened.
 
 ## Reading events
 
-`readEvents()` returns a generator. It fetches pages as you consume it, and
-follows `hasMore` on its own. Pass `null` to read every event:
+### In a transaction
+
+`$tx->readEvents()` returns a list: every committed event that matches
+(`Event`), then every event written earlier in the transaction that matches
+(`PendingEvent`). The whole response is read before it returns.
 
 ```php
-foreach ($client->readEvents(null) as $event) {
-    $event->sequence;               // int
+foreach ($tx->readEvents($query) as $event) {
     $event->time;                   // DateTimeImmutable, UTC
     $event->type;                   // string
     $event->identifiers;            // ['userId' => '123', 'courseId' => ['a', 'b']]
     $event->metadata;               // ['tenantId' => 'acme']
-    $event->payload;                // string, exactly as appended
+    $event->payload;                // string, exactly as written
+    if ($event instanceof Event) {
+        $event->sequence;           // int; a PendingEvent gets its own at commit
+    }
 }
 ```
 
-In `identifiers` and `metadata`, a name with one value maps to a string,
-a name with several values to a list. `NewEvent` and `QueryItem` expose
-them the same way.
+The next call after a read must be `appendEvents()`, with the events of the
+decision or an empty list. A decision that rests on no event reads
+`new NoEvents()` first. A response cut short, or one the client can't read,
+abandons the transaction and throws: run the command again.
 
-- Inside a transaction, `readEvents()` also sees the events appended earlier
-  in it. The generator stays tied to that transaction, even if you consume
-  it later.
-- Outside a transaction, it reads committed events only, and never waits for
-  the active transaction. Use it to display data, or for a projection
-  rebuild.
+### Outside a transaction
 
-It takes these filters:
+`$client->readEvents()` reads committed events, for a projector that
+catches up on its own or a projection rebuild. It returns `Events`, which
+you iterate once. Pages are fetched as you iterate, and a page cut short is
+resumed after the last event received, so no event is skipped or repeated.
+
+```php
+use TamarackDB\Query\AllEvents;
+
+$events = $client->readEvents(new AllEvents(), afterSequence: $last, storeId: $storeId, pageSize: 500);
+foreach ($events as $event) {
+    // Every event is an Event, with its sequence.
+    $last = $event->sequence;
+}
+$storeId = $events->storeId();
+```
+
+To follow new events, keep the last Sequence Position you read and the
+store ID, and pass both to the next read. If the store was reset in
+between, the read throws a `StoreChangedException`: the position no longer
+means anything, so start over from the beginning (see
+[Store ID](https://tamarackdb.github.io/docs/concepts/store-id/)).
+
+### Queries
+
+Both reads take a `Query`, `new AllEvents()`, or `new NoEvents()`.
 
 ```php
 use TamarackDB\Query\EventType;
@@ -123,18 +147,12 @@ use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Metadata;
 use TamarackDB\Query\Query;
 
-$client->readEvents(
-    new Query(
-        EventType::in('user-created', 'user-updated'),
-        Identifier::is('userId', '123'),
-    )->or(
-        EventType::in('some-other-event'),
-        Metadata::is('tenantId', 'acme'),
-    ),
-    afterSequence: 12345,
-    from: new DateTimeImmutable('2026-01-01'),
-    before: new DateTimeImmutable('2026-02-01'),
-    pageSize: 500,
+new Query(
+    EventType::in('user-created', 'user-updated'),
+    Identifier::is('userId', '123'),
+)->or(
+    EventType::in('some-other-event'),
+    Metadata::is('tenantId', 'acme'),
 );
 ```
 
@@ -142,75 +160,75 @@ The filters given together form one item, and an event must match all of
 them. `or()` adds another item, and an event matching any item matches the
 query. Within `EventType::in()`, any of the types matches. Give
 `Identifier::is()` or `Metadata::is()` twice with the same name to require
-both values. A query can't be empty: pass `null` to read every event.
+both values. To add a filter to every item of a query, use `map()` and
+`with()`:
+`$query->map(fn (QueryItem $item) => $item->with(Metadata::is('tenantId', 'acme')))`.
 
-When a page without a ticket is cut short, the generator resumes it after
-the last event it received, so no event is skipped or repeated. To follow
-new events, keep the last `sequence` you got and read again later with it
-as `afterSequence`.
+In `identifiers` and `metadata`, a name with one value maps to a string,
+a name with several values to a list. `NewEvent` and `QueryItem` expose
+them the same way.
 
-You can stop consuming a generator at any time. Inside a transaction, the
-rest of the current page is read and discarded, since closing the
-connection would roll the transaction back.
-
-## Appending events
+## Writing events
 
 ```php
-$appended = $client->appendEvents([
+$time = $tx->appendEvents([
     new NewEvent('user-created', ['userId' => '123'], ['tenantId' => 'acme'], '{"name":"Ada"}'),
 ]);
-
-$appended[0]->sequence; // final as soon as appendEvents() returns
-$appended[0]->time;
 ```
 
-The payload is an opaque string: encode it as you like (JSON, XML, ...).
-A call carries at most 100 events.
-
-### Append Condition
-
-`new AppendCondition($query, $afterSequence)` makes the append fail with a
-`ConcurrencyException` when an event matching `$query` exists after
-`$afterSequence`. The transaction is then rolled back.
-
-Both are optional. Without a query, any event after `$afterSequence` fails
-the append. Without `$afterSequence`, any event matching `$query` does.
+- The write closes the read before it. `appendEvents([])` is the decision
+  to write nothing, and the commit still checks it.
+- `$time` is the time every event of the write carries, and keeps once
+  committed. The events get their Sequence Position at commit.
+- The payload is an opaque string: encode it as you like (JSON, XML, ...).
 
 ## Projections
 
-A projection is an opaque payload identified by type and id, written in the
-same transaction as the events it's computed from.
+A projection is an opaque payload identified by type and id. In a
+transaction, it's written with the events it's computed from (see
+[Projections](https://tamarackdb.github.io/docs/concepts/projections/)).
+
+```php
+$profile = $tx->getProjection('user-profile', '123'); // null when missing
+$profile?->payload;
+
+$tx->saveProjection('user-profile', '123', '{"name":"Ada Lovelace"}');
+$tx->deleteProjection('user-list-entry', '456');
+```
+
+- `getProjection()` sees the changes the transaction made. A missing
+  projection doesn't end the transaction. Its `version` is always null:
+  the server keeps the version read.
+- A transaction must read a projection before it writes it. If it didn't,
+  `saveProjection()` and `deleteProjection()` read it first. The server
+  refuses that read while a read of events waits for its write, so write
+  projections once the events are written.
+- At commit, a projection changed by another write since it was read gets a
+  `ConcurrencyException`.
+
+## Projection rebuilds
+
+Outside a transaction, the client reads committed projections with their
+version, and writes them with `writeProjections()`, all or nothing:
 
 ```php
 use TamarackDB\Projection\ProjectionWrites;
 
-// Inside a transaction, after appending events:
-$writes = new ProjectionWrites();
+$profile = $client->getProjection('user-profile', '123'); // with $profile->version
 
-$profile = $client->getProjection('user-profile', '123'); // null when missing
-if ($profile === null) {
-    $writes->create('user-profile', '123', '{"name":"Ada"}');
-} else {
-    $writes->replace('user-profile', '123', $profile->version, '{"name":"Ada Lovelace"}');
-}
-$writes->delete('user-list-entry', '456', $entryVersion);
-
-// One call, right before the commit.
-$result = $client->writeProjections($writes);
+$result = $client->writeProjections(
+    new ProjectionWrites()
+        ->create('user-list-entry', '789', '{"name":"Grace"}')
+        ->replace('user-profile', '123', $profile->version, '{"name":"Ada Lovelace"}')
+        ->delete('user-list-entry', '456', $entryVersion),
+);
 $result->createVersions;  // new versions, in order
 $result->replaceVersions;
-
-$client->commit();
 ```
 
-Inside a transaction, `getProjection()` sees the projections written earlier
-in it, and a missing projection doesn't end the transaction. Outside one, it
-reads committed projections only.
-
-`replace` and `delete` carry the version you read. When it no longer
-matches, the call fails with a `ConcurrencyException`.
-
-## Projection rebuilds
+`replace` and `delete` carry the version read. When it no longer matches,
+or a created projection already exists, the call throws a
+`ConcurrencyException`.
 
 A rebuild is your application's job. The client gives you the calls it
 needs:
@@ -218,85 +236,15 @@ needs:
 ```php
 $client->deleteProjectionsByType('user-profile'); // or deleteAllProjections()
 
-foreach ($client->readEvents(null) as $event) {
-    // run your projectors, and every so often:
-    // $client->writeProjections($writes);     // outside a transaction: commits on its own
+foreach ($client->readEvents(new AllEvents()) as $event) {
+    // Run your projectors, and every so often:
+    // $client->writeProjections($writes);
 }
 ```
 
-`deleteProjectionsByType()`, `deleteAllProjections()`, and
-`writeProjections()` without a transaction wait for their turn in the
-server's queue, then do their work. `timeout` covers both.
-
-The integration guide describes
-[how to run a rebuild](https://tamarackdb.github.io/docs/guides/integration/).
-
-## Middlewares
-
-A middleware wraps every append, every read, or both. It can change what
-goes in, what comes out, or answer on its own without calling the next
-layer.
-
-```php
-use TamarackDB\Middleware\AppendHandler;
-use TamarackDB\Middleware\AppendMiddleware;
-
-// Adds the tenant to every appended event.
-final class TenantMetadata implements AppendMiddleware
-{
-    public function __construct(private string $tenantId) {}
-
-    public function appendEvents(array $events, ?AppendCondition $condition, string $ticket, AppendHandler $next): array
-    {
-        $events = array_map(fn (NewEvent $e) => new NewEvent(
-            $e->type, $e->identifiers, $e->metadata + ['tenantId' => $this->tenantId], $e->payload,
-        ), $events);
-
-        return $next->appendEvents($events, $condition, $ticket);
-    }
-}
-```
-
-```php
-use TamarackDB\Middleware\ReadHandler;
-use TamarackDB\Middleware\ReadMiddleware;
-use TamarackDB\Middleware\ReadRequest;
-
-// Turns old event versions into the current one.
-final class Upcaster implements ReadMiddleware
-{
-    public function readEvents(ReadRequest $request, ReadHandler $next): \Generator
-    {
-        foreach ($next->readEvents($request) as $event) {
-            yield $event->type === 'user-created.v1' ? $this->toV2($event) : $event;
-        }
-    }
-}
-```
-
-```php
-$client->addMiddleware(new TenantMetadata('acme'));
-$client->addMiddleware(new Upcaster());
-```
-
-- The last middleware added is the outermost layer: it runs first.
-- `addInnerMiddleware()` adds a middleware as the innermost layer, closest
-  to the server, whatever the order of the other calls. It sees events
-  exactly as they are sent and received. Use it for a tool that must record
-  what goes over the wire, such as a test recorder.
-- A class implementing both interfaces wraps both appends and reads.
-- Append middlewares wrap `appendEvents()`, and read middlewares wrap
-  `readEvents()`. `$request->ticket` is null outside a transaction.
-  `ReadRequest` has `with*()` methods to change the request.
-- `$request->query` is null for a read of every event. To add a filter to
-  every item of a query, use `map()` and `with()`:
-  `$query->map(fn (QueryItem $item) => $item->with(Metadata::is('tenantId', 'acme')))`.
-- Pagination happens below every middleware: a read middleware sees one
-  continuous stream of events.
-
-A read middleware must never change an event's `sequence`, and should not
-leave events out: your application relies on the last Sequence Position it
-read for its Append Conditions and to follow new events.
+`writeProjections()` and the bulk deletes wait for their turn in the
+server's queue. See [rebuilds](https://tamarackdb.github.io/docs/concepts/projections/#rebuilds)
+for how to run one.
 
 ## Errors
 
@@ -304,17 +252,18 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 
 | Exception | When |
 |---|---|
-| `ConcurrencyException` | 409: an Append Condition failed, or a projection version doesn't match |
-| `InvalidRequestException` | 400: the server rejected the request |
+| `ConcurrencyException` | 409: a commit whose reads or projections changed since, a projection version that doesn't match, or a call after a store reset |
+| `InvalidRequestException` | 400: the server rejected the request, or a call that breaks a rule of transactions |
 | `UnauthorizedException` | 401: missing or wrong token |
-| `TicketNotActiveException` | 410: the transaction has already ended on the server |
+| `TransactionNotFoundException` | 404: the transaction expired, or an error ended it |
 | `PayloadTooLargeException` | 413: an event, a projection, or the request is too large |
 | `InternalErrorException` | 500 |
-| `TransactionQueueFullException` | 503: too many requests are waiting in the server's queue |
+| `WriteQueueFullException` | 503: too many requests are waiting in the server's queue |
 | `ShuttingDownException` | 503: the server is shutting down |
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
-| `TransactionAlreadyActiveException` | `beginTransaction()` while the client already has a transaction |
-| `NoActiveTransactionException` | `appendEvents()`, `commit()`, or `rollback()` without a transaction |
+| `TransactionAlreadyActiveException` | `beginTransaction()` while the client has an active transaction |
+| `NoActiveTransactionException` | a call on a transaction that is over, or `getTransaction()` without one |
+| `StoreChangedException` | a read outside a transaction got another store ID: the store was reset |
 | `TransportException` | no full response: server unreachable, connection dropped |
 | `TimeoutException` | a `TransportException`: the client stopped waiting |
 | `ProtocolException` | a response this client can't make sense of |
@@ -327,8 +276,7 @@ Every server error extends `ServerException`, with `$statusCode`,
 
 ```php
 $client->health();  // Health { status, version }
-$client->debug();   // GET /debug, as an array
-$client->reset();   // devMode only: deletes every event and projection
+$client->reset();   // devMode only: deletes every event and projection, and rolls back the active transaction
 ```
 
 ## Development
@@ -341,9 +289,10 @@ composer cs
 ```
 
 The integration tests start their own `tamarackdb-server` processes, with
-`devMode` on and an empty data directory, on a free port and on a unix
-socket. They are skipped unless `TAMARACKDB_SERVER_BIN` points to a server
-binary:
+`devMode` on and a new database, on a free port and on a unix socket. They
+are skipped unless `TAMARACKDB_SERVER_BIN` points to a server binary, with
+`tamarackdb-init` in the same directory. Build both from a clone of the
+server repo, at the version stated above, and check it with `-version`:
 
 ```sh
 TAMARACKDB_SERVER_BIN=/path/to/tamarackdb-server composer test
