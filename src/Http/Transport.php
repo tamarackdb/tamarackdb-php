@@ -36,7 +36,11 @@ interface Transport
      * $drainOnAbort is true: then the rest of the response is read and
      * discarded first.
      *
+     * $onHeaders gets the response headers of a 200 response, keyed by
+     * lowercase name, once, before the first line.
+     *
      * @param array<string, string> $headers
+     * @param (\Closure(array<string, string>): void)|null $onHeaders
      *
      * @return \Generator<int, string>
      *
@@ -49,5 +53,6 @@ interface Transport
         array $headers = [],
         ?string $body = null,
         bool $drainOnAbort = false,
+        ?\Closure $onHeaders = null,
     ): \Generator;
 }

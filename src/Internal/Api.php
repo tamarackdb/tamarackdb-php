@@ -7,6 +7,7 @@ namespace TamarackDB\Internal;
 use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\AppendedEvent;
 use TamarackDB\Event\Event;
+use TamarackDB\Event\Events;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ProjectionNotFoundException;
 use TamarackDB\Exception\ProtocolException;
@@ -17,6 +18,8 @@ use TamarackDB\Http\Transport;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\AllEvents;
+use TamarackDB\Query\NoEvents;
 use TamarackDB\Query\Query;
 
 /**
@@ -28,9 +31,11 @@ final class Api
 {
     public const string VERSION_HEADER = 'X-Tamarackdb-Version';
 
+    public const string STORE_HEADER = 'X-Tamarackdb-Store';
+
     /**
-     * How many times in a row a read resumes a page that
-     * was cut short, without getting any new event, before giving up.
+     * How many times in a row a read resumes a page that was cut short,
+     * without getting any new event, before giving up.
      */
     private const int MAX_RESUME_ATTEMPTS = 3;
 
@@ -55,11 +60,20 @@ final class Api
     }
 
     /**
+     * Reads committed events. Every page must come from $storeId, or from
+     * the store of the first page when $storeId is null.
+     */
+    public function readEvents(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?string $storeId, ?int $pageSize): Events
+    {
+        return new Events($storeId, fn(Events $events): \Generator => $this->pages($query, $afterSequence, $pageSize, $events));
+    }
+
+    /**
      * @return \Generator<int, Event>
      */
-    public function readEvents(?Query $query, ?int $afterSequence, ?int $pageSize): \Generator
+    private function pages(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize, Events $events): \Generator
     {
-        $body = ['query' => $query?->toArray() ?? '*'];
+        $body = ['query' => self::query($query)];
         if ($pageSize !== null) {
             $body['limit'] = $pageSize;
         }
@@ -72,7 +86,13 @@ final class Api
             $hasMore = null;
             $progress = false;
             try {
-                $lines = $this->transport->stream('QUERY', '/events', $this->headers(true), Json::encode($body));
+                $lines = $this->transport->stream(
+                    'QUERY',
+                    '/events',
+                    $this->headers(true),
+                    Json::encode($body),
+                    onHeaders: static fn(array $headers) => $events->receiveStoreId(self::storeId($headers)),
+                );
                 foreach ($lines as $line) {
                     $data = Json::decodeObject($line);
                     if (\array_key_exists('hasMore', $data)) {
@@ -146,9 +166,40 @@ final class Api
 
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        $data = Json::decodeObject($this->call('POST', '/projections', $writes->toArray())->body);
+        $data = Json::decodeObject($this->call('POST', '/write', ['projections' => $writes->toArray()])->body);
+        $projections = $data['projections'] ?? null;
+        if (!\is_array($projections)) {
+            throw new ProtocolException('invalid POST /write response');
+        }
 
-        return new ProjectionWriteResult(self::versions($data, 'create'), self::versions($data, 'replace'));
+        return new ProjectionWriteResult(self::versions($projections, 'create'), self::versions($projections, 'replace'));
+    }
+
+    /**
+     * @param array<string, string> $headers
+     */
+    private static function storeId(array $headers): string
+    {
+        $storeId = $headers[strtolower(self::STORE_HEADER)] ?? '';
+        if ($storeId === '') {
+            throw new ProtocolException('QUERY /events response without a store ID');
+        }
+
+        return $storeId;
+    }
+
+    /**
+     * The query as the HTTP API spells it.
+     *
+     * @return non-empty-list<array<string, mixed>>|'all'|'none'
+     */
+    private static function query(Query|AllEvents|NoEvents $query): array|string
+    {
+        return match (true) {
+            $query instanceof AllEvents => 'all',
+            $query instanceof NoEvents => 'none',
+            default => $query->toArray(),
+        };
     }
 
     /**
@@ -160,20 +211,20 @@ final class Api
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param array<mixed> $projections
      *
      * @return list<string>
      */
-    private static function versions(array $data, string $key): array
+    private static function versions(array $projections, string $key): array
     {
-        $entries = $data[$key] ?? [];
+        $entries = $projections[$key] ?? [];
         if (!\is_array($entries)) {
-            throw new ProtocolException('invalid POST /projections response');
+            throw new ProtocolException('invalid POST /write response');
         }
         $versions = [];
         foreach ($entries as $entry) {
             if (!\is_array($entry) || !\is_string($entry['version'] ?? null)) {
-                throw new ProtocolException('invalid POST /projections response');
+                throw new ProtocolException('invalid POST /write response');
             }
             $versions[] = $entry['version'];
         }

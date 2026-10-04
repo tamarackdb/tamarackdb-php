@@ -16,7 +16,8 @@ namespace TamarackDB\Query;
  *         EventType::in('some-other-event'),
  *     )
  *
- * To match every event, pass null instead of a Query.
+ * To match every event, read with AllEvents instead. To match none, read
+ * with NoEvents.
  */
 final readonly class Query
 {
@@ -37,8 +38,8 @@ final readonly class Query
     }
 
     /**
-     * Returns a copy of this query with $map applied to each item. A read
-     * middleware can use it to add a filter to every item:
+     * Returns a copy of this query with $map applied to each item, for
+     * example to add a filter to every item:
      *
      *     $query->map(fn (QueryItem $item) => $item->with(Metadata::is('tenantId', 'acme')))
      *

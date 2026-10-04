@@ -38,17 +38,23 @@ final class FakeTransport implements Transport
         return $response;
     }
 
-    public function stream(string $method, string $path, array $headers = [], ?string $body = null, bool $drainOnAbort = false): \Generator
+    public function stream(string $method, string $path, array $headers = [], ?string $body = null, bool $drainOnAbort = false, ?\Closure $onHeaders = null): \Generator
     {
         $this->requests[] = ['method' => $method, 'path' => $path, 'headers' => $headers, 'body' => $body, 'drainOnAbort' => $drainOnAbort];
         $response = $this->next();
         if ($response instanceof CutStream) {
+            if ($onHeaders !== null) {
+                $onHeaders($response->headers);
+            }
             yield from $response->lines;
 
             throw new TransportException('connection dropped');
         }
         if ($response->statusCode !== 200) {
             throw ServerException::fromResponse($response);
+        }
+        if ($onHeaders !== null) {
+            $onHeaders($response->headers);
         }
         foreach (explode("\n", $response->body) as $line) {
             if ($line !== '') {

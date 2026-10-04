@@ -11,6 +11,10 @@ final readonly class CutStream
 {
     /**
      * @param list<string> $lines
+     * @param array<string, string> $headers keyed by lowercase header name
      */
-    public function __construct(public array $lines) {}
+    public function __construct(
+        public array $lines,
+        public array $headers = ['x-tamarackdb-store' => Responses::STORE],
+    ) {}
 }

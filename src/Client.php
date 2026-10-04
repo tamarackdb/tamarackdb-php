@@ -6,13 +6,16 @@ namespace TamarackDB;
 
 use TamarackDB\Event\AppendCondition;
 use TamarackDB\Event\AppendedEvent;
-use TamarackDB\Event\Event;
+use TamarackDB\Event\Events;
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
+use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
+use TamarackDB\Exception\WriteQueueFullException;
 use TamarackDB\Http\CurlTransport;
 use TamarackDB\Http\Transport;
 use TamarackDB\Internal\Api;
@@ -20,6 +23,8 @@ use TamarackDB\Internal\Json;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\AllEvents;
+use TamarackDB\Query\NoEvents;
 use TamarackDB\Query\Query;
 
 /**
@@ -117,35 +122,31 @@ final class Client
     }
 
     /**
-     * Reads the events matching $query, or every event when $query is
-     * null, oldest first. Pages are fetched as the generator is consumed.
+     * Reads the events matching $query, oldest first. Pages are fetched as
+     * the events are iterated.
      *
-     * Inside a transaction, the read sees the events appended earlier in
-     * it, and stays tied to that transaction even if the generator is
-     * consumed later. Stopping early is safe: the rest of the current page
-     * is read and discarded, since closing the connection would roll the
-     * transaction back.
+     * The read sees committed events only, and never waits for a write. A
+     * page cut short is resumed after the last event received, so no event
+     * is skipped or repeated.
      *
-     * Outside a transaction, the read sees committed events only, and never
-     * waits for the active transaction. A page cut short is resumed after
-     * the last event received, so no event is skipped or repeated. To
-     * follow new events, keep the last Sequence Position you got, and read
-     * again later with it as $afterSequence.
+     * To follow new events, keep the last Sequence Position you got and
+     * the store ID of the read (Events::storeId()). Read again later with
+     * both. If the store was reset in between, the read throws a
+     * StoreChangedException: start over from the beginning.
      *
      * @param int|null $afterSequence only events after this Sequence Position
+     * @param string|null $storeId the store ID $afterSequence comes from
      * @param int|null $pageSize events per request, or null for the server's default
      *
-     * @return \Generator<int, Event>
+     * @throws StoreChangedException when a page comes from another store ID
      */
     public function readEvents(
-        ?Query $query,
+        Query|AllEvents|NoEvents $query,
         ?int $afterSequence = null,
+        ?string $storeId = null,
         ?int $pageSize = null,
-    ): \Generator {
-        $ticket = $this->ticket;
-        $events = $this->api->readEvents($query, $afterSequence, $pageSize);
-
-        return $ticket === null ? $events : $this->endOnServerError($ticket, $events);
+    ): Events {
+        return $this->api->readEvents($query, $afterSequence, $storeId, $pageSize);
     }
 
     /**
@@ -169,9 +170,9 @@ final class Client
 
     /**
      * Reads a projection, or null when none exists. Inside a transaction,
-     * it sees the projections written earlier in it, and a missing
-     * projection doesn't end the transaction. Outside one, it sees
-     * committed projections only.
+     * it sees the projections written earlier in it, a missing projection
+     * doesn't end the transaction, and the version is null. Outside one, it
+     * sees committed projections only, with their version.
      */
     public function getProjection(string $type, string $id): ?Projection
     {
@@ -184,21 +185,22 @@ final class Client
     }
 
     /**
-     * Creates, replaces, and deletes projections. Inside a transaction,
-     * send every change in one call, right before the commit. Outside one,
-     * for a projection rebuild, the call waits for its turn in the server's
-     * queue and commits on its own.
+     * Creates, replaces, and deletes projections, all or nothing, outside a
+     * transaction: for a projection rebuild, or a projector that catches up
+     * on its own. The call waits for its turn in the server's queue.
      *
+     * @throws TransactionAlreadyActiveException inside a transaction
+     * @throws ConcurrencyException when a projection isn't at the version given, or a created one already exists
      * @throws TimeoutException when the turn and the write didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
      */
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        $ticket = $this->ticket;
-        if ($ticket === null) {
-            return $this->api->writeProjections($writes);
+        if ($this->ticket !== null) {
+            throw new TransactionAlreadyActiveException('writeProjections() runs outside a transaction');
         }
 
-        return $this->run($ticket, fn(): ProjectionWriteResult => $this->api->writeProjections($writes));
+        return $this->api->writeProjections($writes);
     }
 
     /**
@@ -206,6 +208,7 @@ final class Client
      * call waits for its turn in the server's queue.
      *
      * @throws TimeoutException when the turn and the delete didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
      */
     public function deleteProjectionsByType(string $type): void
     {
@@ -217,6 +220,7 @@ final class Client
      * for its turn in the server's queue.
      *
      * @throws TimeoutException when the turn and the delete didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
      */
     public function deleteAllProjections(): void
     {
@@ -254,21 +258,6 @@ final class Client
     {
         try {
             return $call();
-        } catch (ServerException $e) {
-            $this->forget($ticket);
-            throw $e;
-        }
-    }
-
-    /**
-     * @param \Generator<int, Event> $events
-     *
-     * @return \Generator<int, Event>
-     */
-    private function endOnServerError(string $ticket, \Generator $events): \Generator
-    {
-        try {
-            yield from $events;
         } catch (ServerException $e) {
             $this->forget($ticket);
             throw $e;

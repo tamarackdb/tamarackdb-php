@@ -13,13 +13,16 @@ use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\ProtocolException;
+use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TicketNotActiveException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\EventType;
 use TamarackDB\Query\Identifier;
+use TamarackDB\Query\NoEvents;
 use TamarackDB\Query\Query;
 
 final class ClientTest extends TestCase
@@ -103,14 +106,13 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::page([1, 2], true), Responses::page([3], false));
 
-        $events = iterator_to_array($this->client->readEvents(null, pageSize: 2), false);
+        $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2), false);
 
         self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
-        self::assertSame(['query' => '*', 'limit' => 2], $this->transport->body(0));
-        self::assertSame(['query' => '*', 'limit' => 2, 'afterSequence' => 2], $this->transport->body(1));
+        self::assertSame(['query' => 'all', 'limit' => 2], $this->transport->body(0));
+        self::assertSame(['query' => 'all', 'limit' => 2, 'afterSequence' => 2], $this->transport->body(1));
         self::assertSame('QUERY', $this->transport->requests[0]['method']);
         self::assertSame('/events', $this->transport->requests[0]['path']);
-        self::assertArrayNotHasKey('X-Tamarackdb-Ticket', $this->transport->requests[0]['headers']);
         self::assertFalse($this->transport->requests[0]['drainOnAbort']);
     }
 
@@ -118,7 +120,7 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::page([7], false));
 
-        $event = iterator_to_array($this->client->readEvents(null), false)[0];
+        $event = iterator_to_array($this->client->readEvents(new AllEvents()), false)[0];
 
         self::assertSame(7, $event->sequence);
         self::assertSame('2026-09-01T14:23:05.123456+00:00', $event->time->format('Y-m-d\TH:i:s.uP'));
@@ -143,14 +145,75 @@ final class ClientTest extends TestCase
         ], $this->transport->body(0));
     }
 
+    public function testReadNoEvents(): void
+    {
+        $this->transport->push(Responses::page([], false));
+
+        self::assertSame([], iterator_to_array($this->client->readEvents(new NoEvents()), false));
+        self::assertSame(['query' => 'none'], $this->transport->body(0));
+    }
+
+    public function testReadEventsGivesTheStoreId(): void
+    {
+        $this->transport->push(Responses::page([1], false));
+
+        $events = $this->client->readEvents(new AllEvents());
+        self::assertNull($events->storeId());
+        iterator_to_array($events, false);
+
+        self::assertSame(Responses::STORE, $events->storeId());
+    }
+
+    public function testReadEventsFromTheGivenStore(): void
+    {
+        $this->transport->push(Responses::page([4], false));
+
+        $events = $this->client->readEvents(new AllEvents(), afterSequence: 3, storeId: Responses::STORE);
+
+        self::assertCount(1, iterator_to_array($events, false));
+        self::assertSame(Responses::STORE, $events->storeId());
+    }
+
+    public function testReadEventsFromAnotherStore(): void
+    {
+        $this->transport->push(Responses::page([1], false, 'other-store'));
+
+        $this->expectException(StoreChangedException::class);
+        iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: 3, storeId: Responses::STORE));
+    }
+
+    public function testReadEventsWhenTheStoreChangesBetweenPages(): void
+    {
+        $this->transport->push(Responses::page([1, 2], true), Responses::page([1], false, 'other-store'));
+
+        $seen = [];
+        try {
+            foreach ($this->client->readEvents(new AllEvents(), pageSize: 2) as $event) {
+                $seen[] = $event->sequence;
+            }
+            self::fail('expected a StoreChangedException');
+        } catch (StoreChangedException) {
+        }
+
+        self::assertSame([1, 2], $seen);
+    }
+
+    public function testReadEventsWithoutAStoreId(): void
+    {
+        $this->transport->push(new Response(200, [], Responses::eventLine(1) . "\n"));
+
+        $this->expectException(ProtocolException::class);
+        iterator_to_array($this->client->readEvents(new AllEvents()));
+    }
+
     public function testReadEventsResumesAPageWithoutTrailer(): void
     {
         $this->transport->push(
-            new Response(200, [], Responses::eventLine(1) . "\n" . Responses::eventLine(2) . "\n"),
+            new Response(200, ['x-tamarackdb-store' => Responses::STORE], Responses::eventLine(1) . "\n" . Responses::eventLine(2) . "\n"),
             Responses::page([3], false),
         );
 
-        $events = iterator_to_array($this->client->readEvents(null), false);
+        $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
         self::assertSame([1, 2, 3], array_map(static fn(Event $e): int => $e->sequence, $events));
         self::assertSame(2, $this->transport->body(1)['afterSequence']);
@@ -164,7 +227,7 @@ final class ClientTest extends TestCase
             Responses::page([2], false),
         );
 
-        $events = iterator_to_array($this->client->readEvents(null), false);
+        $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
         self::assertSame([1, 2], array_map(static fn(Event $e): int => $e->sequence, $events));
         self::assertSame(1, $this->transport->body(1)['afterSequence']);
@@ -180,15 +243,15 @@ final class ClientTest extends TestCase
         );
 
         $this->expectException(TransportException::class);
-        iterator_to_array($this->client->readEvents(null));
+        iterator_to_array($this->client->readEvents(new AllEvents()));
     }
 
     public function testReadEventsRejectsGarbage(): void
     {
-        $this->transport->push(new Response(200, [], "not json\n"));
+        $this->transport->push(new Response(200, ['x-tamarackdb-store' => Responses::STORE], "not json\n"));
 
         $this->expectException(ProtocolException::class);
-        iterator_to_array($this->client->readEvents(null));
+        iterator_to_array($this->client->readEvents(new AllEvents()));
     }
 
     public function testGetProjection(): void
@@ -214,7 +277,10 @@ final class ClientTest extends TestCase
 
     public function testWriteProjections(): void
     {
-        $this->transport->push(Responses::json(['create' => [['version' => 'c1']], 'replace' => [['version' => 'r1']]]));
+        $this->transport->push(Responses::json([
+            'events' => [],
+            'projections' => ['create' => [['version' => 'c1']], 'replace' => [['version' => 'r1']]],
+        ]));
 
         $result = $this->client->writeProjections(
             new ProjectionWrites()
@@ -225,11 +291,11 @@ final class ClientTest extends TestCase
 
         self::assertSame(['c1'], $result->createVersions);
         self::assertSame(['r1'], $result->replaceVersions);
-        self::assertSame([
+        self::assertSame(['projections' => [
             'create' => [['type' => 'a', 'id' => '1', 'payload' => 'x']],
             'replace' => [['type' => 'a', 'id' => '2', 'version' => 'v2', 'payload' => 'y']],
             'delete' => [['type' => 'a', 'id' => '3', 'version' => 'v3']],
-        ], $this->transport->body(0));
+        ]], $this->transport->body(0));
     }
 
     public function testProjectionWritesRejectARepeatedKey(): void
@@ -243,7 +309,7 @@ final class ClientTest extends TestCase
         $this->transport->push(
             Responses::noContent(),
             Responses::noContent(),
-            Responses::json(['create' => [['version' => 'c1']]]),
+            Responses::json(['events' => [], 'projections' => ['create' => [['version' => 'c1']], 'replace' => []]]),
         );
 
         $this->client->deleteProjectionsByType('user/profile');
@@ -251,7 +317,7 @@ final class ClientTest extends TestCase
         $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x'));
 
         self::assertSame(
-            [['DELETE', '/projections/user%2Fprofile'], ['DELETE', '/projections'], ['POST', '/projections']],
+            [['DELETE', '/projections/user%2Fprofile'], ['DELETE', '/projections'], ['POST', '/write']],
             array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
         );
     }
@@ -307,7 +373,7 @@ final class ClientTest extends TestCase
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::page([1, 2], false));
         $this->client->beginTransaction();
 
-        foreach ($this->client->readEvents(null) as $event) {
+        foreach ($this->client->readEvents(new AllEvents()) as $event) {
             break;
         }
 
@@ -321,7 +387,7 @@ final class ClientTest extends TestCase
         $this->client->beginTransaction();
 
         try {
-            iterator_to_array($this->client->readEvents(null));
+            iterator_to_array($this->client->readEvents(new AllEvents()));
             self::fail('expected a TransportException');
         } catch (TransportException) {
         }
@@ -333,7 +399,7 @@ final class ClientTest extends TestCase
     {
         $this->transport->push(Responses::json(['ticket' => self::TICKET]), Responses::noContent(), Responses::error(410, 'TicketNotActive'));
         $this->client->beginTransaction();
-        $events = $this->client->readEvents(null);
+        $events = $this->client->readEvents(new AllEvents());
         $this->client->commit();
 
         try {
@@ -351,7 +417,7 @@ final class ClientTest extends TestCase
         $this->client->beginTransaction();
 
         try {
-            iterator_to_array($this->client->readEvents(null));
+            iterator_to_array($this->client->readEvents(new AllEvents()));
             self::fail('expected an InvalidRequestException');
         } catch (InvalidRequestException) {
         }

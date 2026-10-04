@@ -15,6 +15,7 @@ use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\TicketNotActiveException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\EventType;
 use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Query;
@@ -47,7 +48,7 @@ final class ClientTest extends TestCase
 
         self::assertSame([1, 2], array_map(static fn($e): int => $e->sequence, $appended));
 
-        $events = iterator_to_array($this->client->readEvents(null), false);
+        $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
         self::assertCount(2, $events);
         self::assertSame(1, $events[0]->sequence);
@@ -73,18 +74,15 @@ final class ClientTest extends TestCase
         ), false);
         self::assertSame([1, 4], self::sequences($byType));
 
-        $after = iterator_to_array($this->client->readEvents(null, afterSequence: 3), false);
+        $after = iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: 3), false);
         self::assertSame([4, 5], self::sequences($after));
-
-        $none = iterator_to_array($this->client->readEvents(null, before: new \DateTimeImmutable('2000-01-01')), false);
-        self::assertSame([], $none);
     }
 
     public function testPagesAreFollowed(): void
     {
         $this->appendUsers(7);
 
-        $events = iterator_to_array($this->client->readEvents(null, pageSize: 2), false);
+        $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2), false);
 
         self::assertSame([1, 2, 3, 4, 5, 6, 7], self::sequences($events));
     }
@@ -95,7 +93,7 @@ final class ClientTest extends TestCase
         $this->client->appendEvents([new NewEvent('user-created')]);
         $this->client->rollback();
 
-        self::assertSame([], iterator_to_array($this->client->readEvents(null), false));
+        self::assertSame([], iterator_to_array($this->client->readEvents(new AllEvents()), false));
     }
 
     public function testATicketReadSeesItsOwnEvents(): void
@@ -105,8 +103,8 @@ final class ClientTest extends TestCase
         $this->client->beginTransaction();
         $this->client->appendEvents([new NewEvent('user-created', ['userId' => 'new'])]);
 
-        self::assertSame([1, 2, 3, 4], self::sequences(iterator_to_array($this->client->readEvents(null), false)));
-        self::assertSame([1, 2, 3], self::sequences(iterator_to_array($other->readEvents(null), false)));
+        self::assertSame([1, 2, 3, 4], self::sequences(iterator_to_array($this->client->readEvents(new AllEvents()), false)));
+        self::assertSame([1, 2, 3], self::sequences(iterator_to_array($other->readEvents(new AllEvents()), false)));
 
         $this->client->commit();
     }
@@ -116,13 +114,13 @@ final class ClientTest extends TestCase
         $this->appendUsers(50);
         $this->client->beginTransaction();
 
-        foreach ($this->client->readEvents(null, pageSize: 20) as $event) {
+        foreach ($this->client->readEvents(new AllEvents(), pageSize: 20) as $event) {
             break;
         }
         $this->client->appendEvents([new NewEvent('user-created')]);
         $this->client->commit();
 
-        self::assertCount(51, iterator_to_array($this->client->readEvents(null), false));
+        self::assertCount(51, iterator_to_array($this->client->readEvents(new AllEvents()), false));
     }
 
     public function testAFailedConditionRollsBack(): void
@@ -148,7 +146,7 @@ final class ClientTest extends TestCase
     public function testAnInvalidRequest(): void
     {
         $this->expectException(InvalidRequestException::class);
-        iterator_to_array($this->client->readEvents(null, pageSize: 1_000_000));
+        iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 1_000_000));
     }
 
     public function testProjections(): void

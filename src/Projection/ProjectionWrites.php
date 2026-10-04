@@ -7,10 +7,9 @@ namespace TamarackDB\Projection;
 use TamarackDB\Exception\InvalidArgumentException;
 
 /**
- * Collects the projection writes of one POST /projections call.
- *
- * Collect every change your event handlers make, then send them in one
- * call right before the commit.
+ * Collects the projection writes of one writeProjections() call, outside a
+ * transaction: for a projection rebuild, or a projector that catches up on
+ * its own. Each replace and delete names the version it was read at.
  *
  *     $writes = new ProjectionWrites()
  *         ->create('user-list-entry', '789', '{"name":"Grace"}')

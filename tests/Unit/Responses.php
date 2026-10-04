@@ -8,6 +8,8 @@ use TamarackDB\Http\Response;
 
 final class Responses
 {
+    public const string STORE = '5b0c7e2a-1f4d-4a9b-8c3e-6d2f1a0b9e47';
+
     /**
      * @param array<string, mixed> $data
      */
@@ -31,12 +33,12 @@ final class Responses
      *
      * @param list<int> $sequences
      */
-    public static function page(array $sequences, bool $hasMore): Response
+    public static function page(array $sequences, bool $hasMore, string $store = self::STORE): Response
     {
         $lines = array_map(self::eventLine(...), $sequences);
         $lines[] = json_encode(['hasMore' => $hasMore], JSON_THROW_ON_ERROR);
 
-        return new Response(200, ['content-type' => 'application/x-ndjson'], implode("\n", $lines) . "\n");
+        return new Response(200, ['content-type' => 'application/x-ndjson', 'x-tamarackdb-store' => $store], implode("\n", $lines) . "\n");
     }
 
     public static function eventLine(int $sequence): string
