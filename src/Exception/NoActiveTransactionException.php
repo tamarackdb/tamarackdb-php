@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace TamarackDB\Exception;
 
 /**
- * A call that needs a transaction while the Client has none: never begun,
- * committed, rolled back, or ended by the server after an error.
+ * A call on a Transaction that is over (committed, rolled back, or ended
+ * by the server after an error), or Client::getTransaction() without an
+ * active transaction.
  */
 class NoActiveTransactionException extends \LogicException implements TamarackDBException {}

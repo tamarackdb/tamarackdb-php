@@ -135,7 +135,7 @@ final class Api
     }
 
     /**
-     * Reads the events of a decision in a transaction: the committed
+     * Reads the events of a decision in transaction $txId: the committed
      * events, then the pending ones.
      *
      * @return \Generator<int, Event|PendingEvent>
