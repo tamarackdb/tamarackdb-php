@@ -119,6 +119,8 @@ final class Transaction
      * transaction. The version is always null: the server keeps the
      * version read.
      *
+     * @phpstan-impure
+     *
      * @throws NoActiveTransactionException when the transaction is over
      * @throws ServerException when the server refuses the read: the transaction is over
      */

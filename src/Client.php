@@ -149,6 +149,8 @@ final class Client
      * Reads a committed projection, with its version, or null when none
      * exists. Keep the version to replace or delete the projection with
      * writeProjections().
+     *
+     * @phpstan-impure
      */
     public function getProjection(string $type, string $id): ?Projection
     {
