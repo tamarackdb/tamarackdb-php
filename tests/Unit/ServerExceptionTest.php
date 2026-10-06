@@ -21,10 +21,13 @@ final class ServerExceptionTest extends TestCase
         yield [401, 'Unauthorized', Exception\UnauthorizedException::class];
         yield [404, 'ProjectionNotFound', Exception\ProjectionNotFoundException::class];
         yield [409, 'ConcurrencyException', Exception\ConcurrencyException::class];
+        yield [409, 'TransactionBusy', Exception\TransactionBusyException::class];
+        yield [409, 'NotPaused', Exception\NotPausedException::class];
         yield [413, 'PayloadTooLarge', Exception\PayloadTooLargeException::class];
         yield [500, 'InternalError', Exception\InternalErrorException::class];
         yield [503, 'WriteQueueFull', Exception\WriteQueueFullException::class];
         yield [503, 'ShuttingDown', Exception\ShuttingDownException::class];
+        yield [503, 'Paused', Exception\PausedException::class];
         yield [503, 'Unavailable', Exception\UnavailableException::class];
         yield [418, 'SomethingNew', ServerException::class];
     }

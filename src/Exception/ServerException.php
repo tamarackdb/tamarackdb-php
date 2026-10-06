@@ -21,10 +21,13 @@ class ServerException extends \RuntimeException implements TamarackDBException
         'ProjectionNotFound' => ProjectionNotFoundException::class,
         'TransactionNotFound' => TransactionNotFoundException::class,
         'ConcurrencyException' => ConcurrencyException::class,
+        'TransactionBusy' => TransactionBusyException::class,
+        'NotPaused' => NotPausedException::class,
         'PayloadTooLarge' => PayloadTooLargeException::class,
         'InternalError' => InternalErrorException::class,
         'WriteQueueFull' => WriteQueueFullException::class,
         'ShuttingDown' => ShuttingDownException::class,
+        'Paused' => PausedException::class,
         'Unavailable' => UnavailableException::class,
     ];
 

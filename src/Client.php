@@ -7,6 +7,7 @@ namespace TamarackDB;
 use TamarackDB\Event\Events;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\NoActiveTransactionException;
+use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TimeoutException;
@@ -83,6 +84,7 @@ final class Client
      * until it's over.
      *
      * @throws TransactionAlreadyActiveException when this client already has an active transaction
+     * @throws PausedException when a pause is requested or in place
      */
     public function beginTransaction(): Transaction
     {

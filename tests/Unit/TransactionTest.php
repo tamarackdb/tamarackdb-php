@@ -13,8 +13,10 @@ use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
+use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\PayloadTooLargeException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
+use TamarackDB\Exception\TransactionBusyException;
 use TamarackDB\Exception\TransactionNotFoundException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
@@ -386,6 +388,49 @@ final class TransactionTest extends TestCase
         self::assertFalse($this->client->inTransaction());
         self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(1));
         self::assertSame(['POST', '/reset'], $this->request(2));
+    }
+
+    public function testBeginTransactionDuringAPause(): void
+    {
+        $this->transport->push(Responses::error(503, 'Paused'));
+
+        try {
+            $this->client->beginTransaction();
+            self::fail('expected a PausedException');
+        } catch (PausedException) {
+        }
+
+        self::assertFalse($this->client->inTransaction());
+    }
+
+    public function testABusyTransactionGoesOn(): void
+    {
+        $this->begin(Responses::error(409, 'TransactionBusy'), Responses::noContent());
+
+        try {
+            $this->tx->appendEvents([new NewEvent('a')]);
+            self::fail('expected a TransactionBusyException');
+        } catch (TransactionBusyException) {
+        }
+
+        self::assertTrue($this->client->inTransaction());
+        $this->tx->rollback();
+        self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(2));
+    }
+
+    public function testABusyCommitKeepsTheTransaction(): void
+    {
+        $this->begin(Responses::error(409, 'TransactionBusy'), Responses::noContent());
+
+        try {
+            $this->tx->commit();
+            self::fail('expected a TransactionBusyException');
+        } catch (TransactionBusyException) {
+        }
+
+        self::assertTrue($this->client->inTransaction());
+        $this->tx->commit();
+        self::assertFalse($this->client->inTransaction());
     }
 
     private function begin(Response|\Throwable|CutStream ...$then): void

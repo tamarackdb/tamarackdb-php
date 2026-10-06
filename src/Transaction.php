@@ -15,6 +15,7 @@ use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TamarackDBException;
 use TamarackDB\Exception\TimeoutException;
+use TamarackDB\Exception\TransactionBusyException;
 use TamarackDB\Exception\TransactionNotFoundException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Exception\WriteQueueFullException;
@@ -33,8 +34,8 @@ use TamarackDB\Query\Query;
  * and written with saveProjection() or deleteProjection(). Nothing is
  * written until commit().
  *
- * Any server error ends the transaction, except a missing projection. A
- * transport error leaves it active on this side, since the call may not
+ * Any server error ends the transaction, except a missing projection and
+ * a TransactionBusyException. A transport error leaves it active on this side, since the call may not
  * have reached the server: call rollback(). Once the transaction is over,
  * every call but rollback() throws a NoActiveTransactionException.
  */
@@ -87,7 +88,7 @@ final class Transaction
         try {
             return iterator_to_array($this->api->readTxEvents($this->id, $query), false);
         } catch (ServerException $e) {
-            $this->active = false;
+            $this->endOn($e);
             throw $e;
         } catch (TransportException|ProtocolException $e) {
             // The read's condition is open, and what it missed is unknown.
@@ -165,21 +166,30 @@ final class Transaction
 
     /**
      * Commits the transaction, in its turn in the server's queue. The
-     * transaction is over afterwards, whatever the outcome. If the
-     * response is lost, the commit can't be sent again: read what the
-     * transaction wrote to know whether it happened.
+     * transaction is over afterwards, whatever the outcome, except after a
+     * TransactionBusyException. If the response is lost, the commit can't
+     * be sent again: see
+     * https://tamarackdb.github.io/docs/http-api/transactions/#a-lost-response
      *
      * @throws NoActiveTransactionException when the transaction is over
      * @throws ConcurrencyException when what the transaction read changed since: run the whole command again
      * @throws TransactionNotFoundException when the transaction expired, or an error ended it
+     * @throws TransactionBusyException when another call still runs on the transaction
      * @throws TimeoutException when the turn and the commit didn't end in time
      * @throws WriteQueueFullException when too many requests are already waiting
      */
     public function commit(): void
     {
         $this->requireActive();
+        try {
+            $this->api->commit($this->id);
+        } catch (TransactionBusyException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            $this->active = false;
+            throw $e;
+        }
         $this->active = false;
-        $this->api->commit($this->id);
     }
 
     /**
@@ -217,8 +227,19 @@ final class Transaction
         try {
             return $call();
         } catch (ServerException $e) {
-            $this->active = false;
+            $this->endOn($e);
             throw $e;
+        }
+    }
+
+    /**
+     * Ends the transaction on a server error, except TransactionBusy: the
+     * server keeps the transaction then.
+     */
+    private function endOn(ServerException $e): void
+    {
+        if (!$e instanceof TransactionBusyException) {
+            $this->active = false;
         }
     }
 
