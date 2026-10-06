@@ -26,7 +26,7 @@ final class TransactionTest extends TestCase
     protected function setUp(): void
     {
         $this->client = TestServer::get($this)->client();
-        $this->client->reset();
+        TestServer::reset($this->client);
     }
 
     public function testAReadSeesCommittedThenPendingEvents(): void
@@ -156,22 +156,6 @@ final class TransactionTest extends TestCase
 
         $this->expectException(ConcurrencyException::class);
         $second->commit();
-    }
-
-    public function testAResetEndsTheTransaction(): void
-    {
-        $tx = $this->client->beginTransaction();
-        $tx->readEvents(new NoEvents());
-
-        TestServer::get($this)->client()->reset();
-
-        try {
-            $tx->appendEvents([new NewEvent('user-created')]);
-            self::fail('expected a ConcurrencyException');
-        } catch (ConcurrencyException) {
-        }
-
-        self::assertFalse($tx->isActive());
     }
 
     public function testAnExpiredTransaction(): void

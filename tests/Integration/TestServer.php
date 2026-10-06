@@ -32,6 +32,16 @@ final class TestServer
     ) {}
 
     /**
+     * Empties the store: the server only resets during a pause.
+     */
+    public static function reset(Client $client): void
+    {
+        $client->pause(retryAfter: 10);
+        $client->reset();
+        $client->resume();
+    }
+
+    /**
      * @param array<string, string> $env extra TAMARACKDB_* settings
      */
     public static function get(TestCase $test, array $env = [], bool $unixSocket = false): self

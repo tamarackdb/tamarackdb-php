@@ -10,6 +10,8 @@ use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
+use TamarackDB\Exception\NotPausedException;
+use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\AllEvents;
@@ -28,7 +30,7 @@ final class ClientTest extends TestCase
     protected function setUp(): void
     {
         $this->client = TestServer::get($this)->client();
-        $this->client->reset();
+        TestServer::reset($this->client);
     }
 
     public function testHealth(): void
@@ -36,7 +38,50 @@ final class ClientTest extends TestCase
         $health = $this->client->health();
 
         self::assertSame('ok', $health->status);
-        self::assertSame('v0.27.0', $health->version);
+        self::assertFalse($health->paused);
+        self::assertSame('v0.30.0', $health->version);
+    }
+
+    public function testPause(): void
+    {
+        $this->appendUsers(2);
+
+        $point = $this->client->pause();
+        try {
+            self::assertSame(2, $point->lastSequence);
+            $events = $this->client->readEvents(new AllEvents());
+            iterator_to_array($events);
+            self::assertSame($events->storeId(), $point->storeId);
+            self::assertTrue($this->client->health()->paused);
+            $this->client->writeProjections(new ProjectionWrites()->create('user-profile', '1', '{}'));
+
+            $this->expectException(PausedException::class);
+            $this->client->beginTransaction();
+        } finally {
+            $this->client->resume();
+        }
+    }
+
+    public function testResumeLetsTransactionsBeginAgain(): void
+    {
+        $this->client->pause();
+        $this->client->resume();
+        $this->client->resume();
+
+        self::assertFalse($this->client->health()->paused);
+        $this->appendUsers(1);
+    }
+
+    public function testResetOutsideAPause(): void
+    {
+        $this->expectException(NotPausedException::class);
+        $this->client->reset();
+    }
+
+    public function testOptimize(): void
+    {
+        $this->expectNotToPerformAssertions();
+        $this->client->optimize();
     }
 
     public function testCommittedEventsAreRead(): void
@@ -110,7 +155,7 @@ final class ClientTest extends TestCase
         self::assertSame([3], self::sequences(iterator_to_array($next, false)));
         self::assertSame($storeId, $next->storeId());
 
-        $this->client->reset();
+        TestServer::reset($this->client);
         $this->expectException(StoreChangedException::class);
         iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: $last, storeId: $storeId));
     }
