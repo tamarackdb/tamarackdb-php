@@ -4,9 +4,9 @@ PHP client for [TamarackDB](https://tamarackdb.github.io/), an event store
 compliant with the [DCB specification](https://dcb.events/specification/).
 
 It covers the whole HTTP API: transactions, reading and writing events,
-projections, and projection rebuilds. It is a low-level client, meant to be
-used by an event sourcing framework or directly by an application. It is
-tested against TamarackDB v0.27.0.
+projections, projection rebuilds, and pauses. It is a low-level client,
+meant to be used by an event sourcing framework or directly by an
+application. It is tested against TamarackDB v0.30.0.
 
 ## Requirements
 
@@ -32,9 +32,10 @@ $client = Client::http('http://127.0.0.1:8085', token: 'secret', timeout: 120.0)
 ```
 
 `timeout` is how long the client waits for a response (60 seconds by
-default). It includes the time a write waits for its turn in the server's
-queue: a commit, `writeProjections()`, and the bulk deletes. Past it, the
-client throws a `TimeoutException`.
+default). It includes the time a request waits for its turn in the server's
+queue: a commit, `writeProjections()`, the bulk deletes, `pause()`,
+`resume()`, `optimize()`, and `reset()`. Past it, the client throws a
+`TimeoutException`.
 
 ## Handling a command
 
@@ -75,17 +76,16 @@ try {
   whether there is one. A client holds at most one active transaction.
 - After a `ConcurrencyException` or a `TransactionNotFoundException`, run
   the whole command again, in a new transaction.
-- Any server error ends the transaction, except a missing projection.
-  `$tx->isActive()` then returns false, and every call but `rollback()`
+- Any server error ends the transaction, except a missing projection and a
+  `TransactionBusyException`. `$tx->isActive()` then returns false, and every call but `rollback()`
   throws a `NoActiveTransactionException`. The same goes once the
   transaction is committed or rolled back.
 - A transport failure leaves the transaction active on the client, since the
   call may not have reached the server. Call `rollback()`.
 - `rollback()` never throws, and does nothing on a transaction that is
   already over: it's safe in any error handler.
-- If a commit's response is lost, the commit can't be sent again. Read what
-  the transaction wrote, a projection for example, to know whether it
-  happened.
+- If a commit's response is lost, the commit can't be sent again. See
+  [A lost response](https://tamarackdb.github.io/docs/http-api/transactions/#a-lost-response).
 
 ## Reading events
 
@@ -246,13 +246,29 @@ foreach ($client->readEvents(new AllEvents()) as $event) {
 server's queue. See [rebuilds](https://tamarackdb.github.io/docs/concepts/projections/#rebuilds)
 for how to run one.
 
+## Pause
+
+```php
+$point = $client->pause();  // returns once the pause is in place
+$point->lastSequence;       // int
+$point->storeId;            // string
+
+$client->resume();
+```
+
+While transactions are still open, `pause()` asks the server again every
+`$retryAfter` milliseconds (1000 by default): `$client->pause(retryAfter: 200)`.
+See [Pause](https://tamarackdb.github.io/docs/http-api/pause/).
+
 ## Errors
 
 Every exception implements `TamarackDB\Exception\TamarackDBException`.
 
 | Exception | When |
 |---|---|
-| `ConcurrencyException` | 409: a commit whose reads or projections changed since, a projection version that doesn't match, or a call after a store reset |
+| `ConcurrencyException` | 409: a commit whose reads or projections changed since, or a projection version that doesn't match |
+| `TransactionBusyException` | 409: another call still runs on the transaction, for example one that timed out. The transaction goes on |
+| `NotPausedException` | 409: `reset()` while no pause is in place |
 | `InvalidRequestException` | 400: the server rejected the request, or a call that breaks a rule of transactions |
 | `UnauthorizedException` | 401: missing or wrong token |
 | `TransactionNotFoundException` | 404: the transaction expired, or an error ended it |
@@ -260,6 +276,7 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `InternalErrorException` | 500 |
 | `WriteQueueFullException` | 503: too many requests are waiting in the server's queue |
 | `ShuttingDownException` | 503: the server is shutting down |
+| `PausedException` | 503: `beginTransaction()` while a pause is requested or in place |
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
 | `TransactionAlreadyActiveException` | `beginTransaction()` while the client has an active transaction |
 | `NoActiveTransactionException` | a call on a transaction that is over, or `getTransaction()` without one |
@@ -275,8 +292,9 @@ Every server error extends `ServerException`, with `$statusCode`,
 ## Server state
 
 ```php
-$client->health();  // Health { status, version }
-$client->reset();   // devMode only: deletes every event and projection, and rolls back the active transaction
+$client->health();    // Health { status, paused, version }
+$client->optimize();  // refreshes the statistics SQLite plans queries with
+$client->reset();     // devMode only, during a pause: deletes every event and projection
 ```
 
 ## Development
