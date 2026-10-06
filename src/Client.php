@@ -6,7 +6,9 @@ namespace TamarackDB;
 
 use TamarackDB\Event\Events;
 use TamarackDB\Exception\ConcurrencyException;
+use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\NoActiveTransactionException;
+use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\StoreChangedException;
@@ -33,7 +35,7 @@ use TamarackDB\Query\Query;
  *
  * The other methods run outside any transaction: reading committed
  * events, for a projector that catches up on its own; writing projections
- * with their versions; and rebuilding projections.
+ * with their versions; rebuilding projections; and pausing.
  *
  *     $client = Client::http('http://127.0.0.1:8085');
  *     $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock', token: 'secret');
@@ -200,21 +202,70 @@ final class Client
     public function health(): Health
     {
         $data = Json::decodeObject($this->api->call('GET', '/health')->body);
-        if (!\is_string($data['status'] ?? null) || !\is_string($data['version'] ?? null)) {
+        $status = $data['status'] ?? null;
+        $paused = $data['paused'] ?? null;
+        $version = $data['version'] ?? null;
+        if (!\is_string($status) || !\is_bool($paused) || !\is_string($version)) {
             throw new ProtocolException('invalid GET /health response');
         }
 
-        return new Health($data['status'], $data['version']);
+        return new Health($status, $paused, $version);
     }
 
     /**
-     * Deletes every event and every projection, and rolls back the active
-     * transaction. Only exists when the server has devMode on: meant for
-     * test suites, never production.
+     * Stops transactions from beginning, and returns once the pause is in
+     * place. While the server answers that transactions are still open,
+     * it asks again every $retryAfter milliseconds. See
+     * https://tamarackdb.github.io/docs/http-api/pause/
+     *
+     * @throws InvalidArgumentException when $retryAfter is below 1
+     * @throws WriteQueueFullException when too many requests are already waiting
+     */
+    public function pause(int $retryAfter = 1000): PausePoint
+    {
+        if ($retryAfter < 1) {
+            throw new InvalidArgumentException('retryAfter must be at least 1 millisecond');
+        }
+        while (($point = $this->api->pause()) === null) {
+            usleep($retryAfter * 1000);
+        }
+
+        return $point;
+    }
+
+    /**
+     * Ends the pause, or the requested pause: transactions can begin
+     * again. Without a pause, it does nothing.
+     *
+     * @throws WriteQueueFullException when too many requests are already waiting
+     */
+    public function resume(): void
+    {
+        $this->api->call('POST', '/resume');
+    }
+
+    /**
+     * Refreshes the statistics SQLite plans queries with, in its turn in
+     * the server's queue. See
+     * https://tamarackdb.github.io/docs/http-api/optimize/
+     *
+     * @throws TimeoutException when the turn and the optimize didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
+     */
+    public function optimize(): void
+    {
+        $this->api->call('POST', '/optimize');
+    }
+
+    /**
+     * Deletes every event and every projection. Only exists when the
+     * server has devMode on, and only runs during a pause: meant for test
+     * suites, never production.
+     *
+     * @throws NotPausedException when no pause is in place
      */
     public function reset(): void
     {
-        $this->transaction?->rollback();
         $this->api->call('POST', '/reset');
     }
 }

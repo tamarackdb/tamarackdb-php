@@ -7,6 +7,7 @@ namespace TamarackDB\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use TamarackDB\Client;
 use TamarackDB\Event\Event;
+use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TransportException;
@@ -248,12 +249,59 @@ final class ClientTest extends TestCase
 
     public function testHealth(): void
     {
-        $this->transport->push(Responses::json(['status' => 'ok', 'version' => 'v0.25.0']));
+        $this->transport->push(Responses::json(['status' => 'ok', 'paused' => true, 'version' => 'v0.30.0']));
 
         $health = $this->client->health();
 
         self::assertSame('ok', $health->status);
-        self::assertSame('v0.25.0', $health->version);
+        self::assertTrue($health->paused);
+        self::assertSame('v0.30.0', $health->version);
+    }
+
+    public function testPauseAsksAgainWhileTransactionsAreOpen(): void
+    {
+        $this->transport->push(
+            Responses::json(['openTransactions' => 2], 202),
+            Responses::json(['openTransactions' => 1], 202),
+            new Response(200, ['content-type' => 'application/json', 'x-tamarackdb-store' => Responses::STORE], '{"lastSequence":5042}'),
+        );
+
+        $point = $this->client->pause(retryAfter: 1);
+
+        self::assertSame(5042, $point->lastSequence);
+        self::assertSame(Responses::STORE, $point->storeId);
+        self::assertSame(
+            [['POST', '/pause'], ['POST', '/pause'], ['POST', '/pause']],
+            array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
+        );
+    }
+
+    public function testPauseWithoutAStoreId(): void
+    {
+        $this->transport->push(Responses::json(['lastSequence' => 0]));
+
+        $this->expectException(ProtocolException::class);
+        $this->client->pause();
+    }
+
+    public function testPauseRejectsANonPositiveRetryAfter(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->client->pause(retryAfter: 0);
+    }
+
+    public function testServerStateCalls(): void
+    {
+        $this->transport->push(Responses::noContent(), Responses::noContent(), Responses::noContent());
+
+        $this->client->resume();
+        $this->client->optimize();
+        $this->client->reset();
+
+        self::assertSame(
+            [['POST', '/resume'], ['POST', '/optimize'], ['POST', '/reset']],
+            array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
+        );
     }
 
     private static function sequence(Event $event): int

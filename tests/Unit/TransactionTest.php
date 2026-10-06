@@ -379,17 +379,6 @@ final class TransactionTest extends TestCase
         self::assertTrue($this->client->inTransaction());
     }
 
-    public function testResetRollsBackTheTransaction(): void
-    {
-        $this->begin(Responses::noContent(), Responses::noContent());
-
-        $this->client->reset();
-
-        self::assertFalse($this->client->inTransaction());
-        self::assertSame(['DELETE', '/tx/' . self::TX], $this->request(1));
-        self::assertSame(['POST', '/reset'], $this->request(2));
-    }
-
     public function testBeginTransactionDuringAPause(): void
     {
         $this->transport->push(Responses::error(503, 'Paused'));

@@ -15,6 +15,7 @@ use TamarackDB\Exception\ServerException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Http\Transport;
+use TamarackDB\PausePoint;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
@@ -91,7 +92,7 @@ final class Api
                     '/events',
                     $this->headers(true),
                     Json::encode($body),
-                    onHeaders: static fn(array $headers) => $events->receiveStoreId(self::storeId($headers)),
+                    onHeaders: static fn(array $headers) => $events->receiveStoreId(self::storeId($headers, 'QUERY /events')),
                 );
                 foreach ($lines as $line) {
                     $data = Json::decodeObject($line);
@@ -223,6 +224,24 @@ final class Api
         return new ProjectionWriteResult(self::versions($data, 'create'), self::versions($data, 'replace'));
     }
 
+    /**
+     * Asks for a pause. Returns where the log stands once the pause is in
+     * place, or null while transactions are still open.
+     */
+    public function pause(): ?PausePoint
+    {
+        $response = $this->call('POST', '/pause');
+        if ($response->statusCode === 202) {
+            return null;
+        }
+        $data = Json::decodeObject($response->body);
+        if ($response->statusCode !== 200 || !\is_int($data['lastSequence'] ?? null)) {
+            throw new ProtocolException('invalid POST /pause response');
+        }
+
+        return new PausePoint($data['lastSequence'], self::storeId($response->headers, 'POST /pause'));
+    }
+
     private static function txPath(string $txId): string
     {
         return '/tx/' . rawurlencode($txId);
@@ -231,11 +250,11 @@ final class Api
     /**
      * @param array<string, string> $headers
      */
-    private static function storeId(array $headers): string
+    private static function storeId(array $headers, string $request): string
     {
         $storeId = $headers[strtolower(self::STORE_HEADER)] ?? '';
         if ($storeId === '') {
-            throw new ProtocolException('QUERY /events response without a store ID');
+            throw new ProtocolException($request . ' response without a store ID');
         }
 
         return $storeId;
