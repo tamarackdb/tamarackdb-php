@@ -218,13 +218,9 @@ final class Api
 
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult
     {
-        $data = Json::decodeObject($this->call('POST', '/write', ['projections' => $writes->toArray()])->body);
-        $projections = $data['projections'] ?? null;
-        if (!\is_array($projections)) {
-            throw new ProtocolException('invalid POST /write response');
-        }
+        $data = Json::decodeObject($this->call('POST', '/projections', $writes->toArray())->body);
 
-        return new ProjectionWriteResult(self::versions($projections, 'create'), self::versions($projections, 'replace'));
+        return new ProjectionWriteResult(self::versions($data, 'create'), self::versions($data, 'replace'));
     }
 
     private static function txPath(string $txId): string
@@ -276,12 +272,12 @@ final class Api
     {
         $entries = $projections[$key] ?? [];
         if (!\is_array($entries)) {
-            throw new ProtocolException('invalid POST /write response');
+            throw new ProtocolException('invalid POST /projections response');
         }
         $versions = [];
         foreach ($entries as $entry) {
             if (!\is_array($entry) || !\is_string($entry['version'] ?? null)) {
-                throw new ProtocolException('invalid POST /write response');
+                throw new ProtocolException('invalid POST /projections response');
             }
             $versions[] = $entry['version'];
         }

@@ -204,10 +204,7 @@ final class ClientTest extends TestCase
 
     public function testWriteProjections(): void
     {
-        $this->transport->push(Responses::json([
-            'events' => [],
-            'projections' => ['create' => [['version' => 'c1']], 'replace' => [['version' => 'r1']]],
-        ]));
+        $this->transport->push(Responses::json(['create' => [['version' => 'c1']], 'replace' => [['version' => 'r1']]]));
 
         $result = $this->client->writeProjections(
             new ProjectionWrites()
@@ -218,11 +215,11 @@ final class ClientTest extends TestCase
 
         self::assertSame(['c1'], $result->createVersions);
         self::assertSame(['r1'], $result->replaceVersions);
-        self::assertSame(['projections' => [
+        self::assertSame([
             'create' => [['type' => 'a', 'id' => '1', 'payload' => 'x']],
             'replace' => [['type' => 'a', 'id' => '2', 'version' => 'v2', 'payload' => 'y']],
             'delete' => [['type' => 'a', 'id' => '3', 'version' => 'v3']],
-        ]], $this->transport->body(0));
+        ], $this->transport->body(0));
     }
 
     public function testProjectionWritesRejectARepeatedKey(): void
@@ -236,7 +233,7 @@ final class ClientTest extends TestCase
         $this->transport->push(
             Responses::noContent(),
             Responses::noContent(),
-            Responses::json(['events' => [], 'projections' => ['create' => [['version' => 'c1']], 'replace' => []]]),
+            Responses::json(['create' => [['version' => 'c1']], 'replace' => []]),
         );
 
         $this->client->deleteProjectionsByType('user/profile');
@@ -244,7 +241,7 @@ final class ClientTest extends TestCase
         $this->client->writeProjections(new ProjectionWrites()->create('a', '1', 'x'));
 
         self::assertSame(
-            [['DELETE', '/projections/user%2Fprofile'], ['DELETE', '/projections'], ['POST', '/write']],
+            [['DELETE', '/projections/user%2Fprofile'], ['DELETE', '/projections'], ['POST', '/projections']],
             array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
         );
     }
