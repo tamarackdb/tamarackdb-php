@@ -9,7 +9,6 @@ use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ConcurrencyException;
-use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\ServerException;
@@ -21,6 +20,7 @@ use TamarackDB\Exception\TransportException;
 use TamarackDB\Exception\WriteQueueFullException;
 use TamarackDB\Internal\Api;
 use TamarackDB\Projection\Projection;
+use TamarackDB\Projection\TxProjectionWrites;
 use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\NoEvents;
 use TamarackDB\Query\Query;
@@ -31,8 +31,7 @@ use TamarackDB\Query\Query;
  *
  * Each decision reads events with readEvents(), then writes its events,
  * or none, with appendEvents(). Projections are read with getProjection()
- * and written with saveProjection() or deleteProjection(). Nothing is
- * written until commit().
+ * and written with writeProjections(). Nothing is written until commit().
  *
  * Any server error ends the transaction, except a missing projection and
  * a TransactionBusyException. A transport error leaves it active on this side, since the call may not
@@ -42,9 +41,6 @@ use TamarackDB\Query\Query;
 final class Transaction
 {
     private bool $active = true;
-
-    /** @var array<string, true> the projections read in the transaction, keyed by type and id */
-    private array $readProjections = [];
 
     /**
      * @internal
@@ -128,40 +124,26 @@ final class Transaction
      */
     public function getProjection(string $type, string $id): ?Projection
     {
-        $projection = $this->run(fn(): ?Projection => $this->api->getProjection($this->id, $type, $id));
-        $this->readProjections[self::projectionKey($type, $id)] = true;
-
-        return $projection;
+        return $this->run(fn(): ?Projection => $this->api->getProjection($this->id, $type, $id));
     }
 
     /**
-     * Creates or replaces a projection, with its whole new payload. The
-     * transaction must have read it first: if it didn't, this reads it, so
-     * call it only once the events of the last read are written.
+     * Creates, replaces, and deletes projections. A create needs no read.
+     * A replace or a delete needs a read of the projection in the
+     * transaction, or a create earlier in it: the server checks, and ends
+     * the transaction otherwise. Call it only once the events of the last
+     * read are written. Empty writes send nothing.
      *
      * @throws NoActiveTransactionException when the transaction is over
-     * @throws InvalidArgumentException when $type or $id is empty
-     * @throws ServerException when the server refuses the read or the write: the transaction is over
+     * @throws ServerException when the server refuses the write: the transaction is over
      */
-    public function saveProjection(string $type, string $id, string $payload): void
+    public function writeProjections(TxProjectionWrites $writes): void
     {
-        $this->readBeforeWrite($type, $id);
-        $this->run(fn() => $this->api->writeTxProjection($this->id, $type, $id, $payload));
-    }
-
-    /**
-     * Deletes a projection. Deleting one that doesn't exist does nothing.
-     * The transaction must have read it first: if it didn't, this reads
-     * it, so call it only once the events of the last read are written.
-     *
-     * @throws NoActiveTransactionException when the transaction is over
-     * @throws InvalidArgumentException when $type or $id is empty
-     * @throws ServerException when the server refuses the read or the write: the transaction is over
-     */
-    public function deleteProjection(string $type, string $id): void
-    {
-        $this->readBeforeWrite($type, $id);
-        $this->run(fn() => $this->api->writeTxProjection($this->id, $type, $id, null));
+        $this->requireActive();
+        if ($writes->isEmpty()) {
+            return;
+        }
+        $this->run(fn() => $this->api->writeTxProjections($this->id, $writes));
     }
 
     /**
@@ -243,30 +225,10 @@ final class Transaction
         }
     }
 
-    /**
-     * Reads the projection unless the transaction already read it: the
-     * server only lets a transaction write a projection it read.
-     */
-    private function readBeforeWrite(string $type, string $id): void
-    {
-        $this->requireActive();
-        if ($type === '' || $id === '') {
-            throw new InvalidArgumentException('a projection type and id must not be empty');
-        }
-        if (!isset($this->readProjections[self::projectionKey($type, $id)])) {
-            $this->getProjection($type, $id);
-        }
-    }
-
     private function requireActive(): void
     {
         if (!$this->active) {
             throw new NoActiveTransactionException(\sprintf('transaction %s is over', $this->id));
         }
-    }
-
-    private static function projectionKey(string $type, string $id): string
-    {
-        return $type . "\0" . $id;
     }
 }

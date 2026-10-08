@@ -14,12 +14,12 @@ use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\PausedException;
-use TamarackDB\Exception\PayloadTooLargeException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\TransactionBusyException;
 use TamarackDB\Exception\TransactionNotFoundException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
+use TamarackDB\Projection\TxProjectionWrites;
 use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\Identifier;
 use TamarackDB\Query\NoEvents;
@@ -303,80 +303,59 @@ final class TransactionTest extends TestCase
         self::assertSame(['GET', '/tx/' . self::TX . '/projections/show%20seats/s%2F1'], $this->request(1));
     }
 
-    public function testSaveAProjectionReadFirst(): void
+    public function testWriteProjections(): void
     {
-        $this->begin(new Response(200, [], '{"free":37}'), self::txWritten());
+        $this->begin(self::txWritten());
 
-        $this->tx->getProjection('show-seats', 's1');
-        $this->tx->saveProjection('show-seats', 's1', '{"free":36}');
+        $this->tx->writeProjections(
+            new TxProjectionWrites()
+                ->create('seat-hold', 's1-B2', '{"customer":"c7"}')
+                ->replace('show-seats', 's1', '{"free":36}')
+                ->delete('seat-hold', 's1-A6'),
+        );
 
-        self::assertCount(3, $this->transport->requests);
-        self::assertSame(['POST', '/tx/' . self::TX . '/projections'], $this->request(2));
-        self::assertSame(['upsert' => [['type' => 'show-seats', 'id' => 's1', 'payload' => '{"free":36}']]], $this->transport->body(2));
-    }
-
-    public function testSaveAProjectionNotReadReadsItFirst(): void
-    {
-        $this->begin(Responses::error(404, 'ProjectionNotFound'), self::txWritten(), self::txWritten());
-
-        $this->tx->saveProjection('show-seats', 's1', '{"free":40}');
-        $this->tx->saveProjection('show-seats', 's1', '{"free":39}');
-
+        self::assertCount(2, $this->transport->requests);
+        self::assertSame(['POST', '/tx/' . self::TX . '/projections'], $this->request(1));
         self::assertSame([
-            ['GET', '/tx/' . self::TX . '/projections/show-seats/s1'],
-            ['POST', '/tx/' . self::TX . '/projections'],
-            ['POST', '/tx/' . self::TX . '/projections'],
-        ], [$this->request(1), $this->request(2), $this->request(3)]);
+            'create' => [['type' => 'seat-hold', 'id' => 's1-B2', 'payload' => '{"customer":"c7"}']],
+            'replace' => [['type' => 'show-seats', 'id' => 's1', 'payload' => '{"free":36}']],
+            'delete' => [['type' => 'seat-hold', 'id' => 's1-A6']],
+        ], $this->transport->body(1));
     }
 
-    public function testDeleteAProjectionNotReadReadsItFirst(): void
+    public function testEmptyProjectionWritesSendNothing(): void
     {
-        $this->begin(new Response(200, [], 'x'), self::txWritten());
+        $this->begin();
 
-        $this->tx->deleteProjection('seat-hold', 's1-A6');
+        $this->tx->writeProjections(new TxProjectionWrites());
 
-        self::assertSame(['GET', '/tx/' . self::TX . '/projections/seat-hold/s1-A6'], $this->request(1));
-        self::assertSame(['delete' => [['type' => 'seat-hold', 'id' => 's1-A6']]], $this->transport->body(2));
-    }
-
-    public function testProjectionsReadInAnEarlierTransactionAreReadAgain(): void
-    {
-        $this->begin(new Response(200, [], 'x'), Responses::noContent());
-        $this->tx->getProjection('a', '1');
-        $this->tx->commit();
-
-        $this->begin(new Response(200, [], 'x'), self::txWritten());
-        $this->tx->saveProjection('a', '1', 'y');
-
-        self::assertSame(['GET', '/tx/' . self::TX . '/projections/a/1'], $this->request(4));
-        self::assertSame(['POST', '/tx/' . self::TX . '/projections'], $this->request(5));
+        self::assertCount(1, $this->transport->requests);
+        self::assertTrue($this->client->inTransaction());
     }
 
     public function testAProjectionWriteErrorEndsTheTransaction(): void
     {
-        $this->begin(new Response(200, [], 'x'), Responses::error(413, 'PayloadTooLarge'));
+        $this->begin(Responses::error(400, 'InvalidRequest'));
 
         try {
-            $this->tx->saveProjection('a', '1', 'y');
-            self::fail('expected a PayloadTooLargeException');
-        } catch (PayloadTooLargeException) {
+            $this->tx->writeProjections(new TxProjectionWrites()->replace('a', '1', 'y'));
+            self::fail('expected an InvalidRequestException');
+        } catch (InvalidRequestException) {
         }
 
         self::assertFalse($this->client->inTransaction());
     }
 
-    public function testSaveAProjectionWithAnEmptyId(): void
+    public function testTxProjectionWritesRejectAnEmptyId(): void
     {
-        $this->begin();
+        $this->expectException(InvalidArgumentException::class);
+        new TxProjectionWrites()->create('a', '', 'x');
+    }
 
-        try {
-            $this->tx->saveProjection('a', '', 'x');
-            self::fail('expected an InvalidArgumentException');
-        } catch (InvalidArgumentException) {
-        }
-
-        self::assertCount(1, $this->transport->requests);
-        self::assertTrue($this->client->inTransaction());
+    public function testTxProjectionWritesRejectARepeatedKey(): void
+    {
+        $this->expectExceptionMessage('delete[0] has the same type and id as create[0]');
+        new TxProjectionWrites()->create('a', '1', 'x')->delete('a', '1');
     }
 
     public function testBeginTransactionDuringAPause(): void

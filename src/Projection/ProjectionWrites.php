@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TamarackDB\Projection;
 
-use TamarackDB\Exception\InvalidArgumentException;
+use TamarackDB\Internal\ProjectionKeys;
 
 /**
  * Collects the projection writes of one writeProjections() call, outside a
@@ -27,15 +27,19 @@ final class ProjectionWrites implements \Countable
     /** @var list<array{type: string, id: string, version: string}> */
     private array $delete = [];
 
-    /** @var array<string, string> where each type + id is already written, keyed by type and id */
-    private array $seen = [];
+    private readonly ProjectionKeys $keys;
+
+    public function __construct()
+    {
+        $this->keys = new ProjectionKeys();
+    }
 
     /**
      * Creates a projection that must not exist yet.
      */
     public function create(string $type, string $id, string $payload): self
     {
-        $this->claim('create', \count($this->create), $type, $id);
+        $this->keys->claim('create', \count($this->create), $type, $id);
         $this->create[] = ['type' => $type, 'id' => $id, 'payload' => $payload];
 
         return $this;
@@ -46,7 +50,7 @@ final class ProjectionWrites implements \Countable
      */
     public function replace(string $type, string $id, string $version, string $payload): self
     {
-        $this->claim('replace', \count($this->replace), $type, $id);
+        $this->keys->claim('replace', \count($this->replace), $type, $id);
         $this->replace[] = ['type' => $type, 'id' => $id, 'version' => $version, 'payload' => $payload];
 
         return $this;
@@ -57,7 +61,7 @@ final class ProjectionWrites implements \Countable
      */
     public function delete(string $type, string $id, string $version): self
     {
-        $this->claim('delete', \count($this->delete), $type, $id);
+        $this->keys->claim('delete', \count($this->delete), $type, $id);
         $this->delete[] = ['type' => $type, 'id' => $id, 'version' => $version];
 
         return $this;
@@ -79,17 +83,5 @@ final class ProjectionWrites implements \Countable
     public function toArray(): array
     {
         return ['create' => $this->create, 'replace' => $this->replace, 'delete' => $this->delete];
-    }
-
-    private function claim(string $op, int $index, string $type, string $id): void
-    {
-        if ($type === '' || $id === '') {
-            throw new InvalidArgumentException('a projection type and id must not be empty');
-        }
-        $key = $type . "\0" . $id;
-        if (isset($this->seen[$key])) {
-            throw new InvalidArgumentException(\sprintf('%s[%d] has the same type and id as %s', $op, $index, $this->seen[$key]));
-        }
-        $this->seen[$key] = \sprintf('%s[%d]', $op, $index);
     }
 }

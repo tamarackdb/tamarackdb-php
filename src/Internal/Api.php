@@ -19,6 +19,7 @@ use TamarackDB\PausePoint;
 use TamarackDB\Projection\Projection;
 use TamarackDB\Projection\ProjectionWriteResult;
 use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Projection\TxProjectionWrites;
 use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\NoEvents;
 use TamarackDB\Query\Query;
@@ -205,16 +206,9 @@ final class Api
         return new Projection($type, $id, $version, $response->body);
     }
 
-    /**
-     * Writes one projection in transaction $txId: its new payload, or its
-     * deletion when $payload is null.
-     */
-    public function writeTxProjection(string $txId, string $type, string $id, ?string $payload): void
+    public function writeTxProjections(string $txId, TxProjectionWrites $writes): void
     {
-        $request = $payload === null
-            ? ['delete' => [['type' => $type, 'id' => $id]]]
-            : ['upsert' => [['type' => $type, 'id' => $id, 'payload' => $payload]]];
-        $this->call('POST', self::txPath($txId) . '/projections', $request);
+        $this->call('POST', self::txPath($txId) . '/projections', $writes->toArray());
     }
 
     public function writeProjections(ProjectionWrites $writes): ProjectionWriteResult

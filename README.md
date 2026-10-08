@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.30.0.
+application. It is tested against TamarackDB v0.31.0.
 
 ## Requirements
 
@@ -47,6 +47,7 @@ once, or nothing. How it works is in
 
 ```php
 use TamarackDB\Event\NewEvent;
+use TamarackDB\Projection\TxProjectionWrites;
 use TamarackDB\Query\Identifier;
 use TamarackDB\Query\Query;
 
@@ -61,8 +62,11 @@ try {
     ]);
     // Give $result->time to the events before your event handlers react to them.
 
-    // Projections, once the events are written.
-    $tx->saveProjection('user-profile', $userId, json_encode(['name' => $name]));
+    // Projections, once the events are written. A replace needs a read.
+    $tx->getProjection('user-profile', $userId);
+    $tx->writeProjections(
+        new TxProjectionWrites()->replace('user-profile', $userId, json_encode(['name' => $name])),
+    );
 
     $tx->commit();
 } catch (\Throwable $e) {
@@ -189,22 +193,31 @@ transaction, it's written with the events it's computed from (see
 [Projections](https://tamarackdb.github.io/docs/concepts/projections/)).
 
 ```php
+use TamarackDB\Projection\TxProjectionWrites;
+
 $profile = $tx->getProjection('user-profile', '123'); // null when missing
 $profile?->payload;
+$tx->getProjection('user-list-entry', '456');
 
-$tx->saveProjection('user-profile', '123', '{"name":"Ada Lovelace"}');
-$tx->deleteProjection('user-list-entry', '456');
+$tx->writeProjections(
+    new TxProjectionWrites()
+        ->create('user-list-entry', '789', '{"name":"Grace"}')
+        ->replace('user-profile', '123', '{"name":"Ada Lovelace"}')
+        ->delete('user-list-entry', '456'),
+);
 ```
 
 - `getProjection()` sees the changes the transaction made. A missing
   projection doesn't end the transaction. Its `version` is always null:
   the server keeps the version read.
-- A transaction must read a projection before it writes it. If it didn't,
-  `saveProjection()` and `deleteProjection()` read it first. The server
-  refuses that read while a read of events waits for its write, so write
-  projections once the events are written.
-- At commit, a projection changed by another write since it was read gets a
-  `ConcurrencyException`.
+- No write carries a version. A `create` needs no read: your code knows the
+  projection doesn't exist yet. A `replace` or a `delete` needs a read of
+  the projection in the transaction, or a `create` earlier in it.
+- The server refuses reads and writes of projections while a read of events
+  waits for its write, so handle projections once the events are written.
+- Empty writes send nothing.
+- At commit, a projection changed by another write since it was read, or a
+  created one that already exists, gets a `ConcurrencyException`.
 
 ## Projection rebuilds
 

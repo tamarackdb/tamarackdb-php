@@ -12,6 +12,8 @@ use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\TransactionNotFoundException;
+use TamarackDB\Projection\ProjectionWrites;
+use TamarackDB\Projection\TxProjectionWrites;
 use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\EventType;
 use TamarackDB\Query\Identifier;
@@ -118,7 +120,7 @@ final class TransactionTest extends TestCase
     public function testProjections(): void
     {
         $tx = $this->client->beginTransaction();
-        $tx->saveProjection('show-seats', 's/1', '{"free":40}');
+        $tx->writeProjections(new TxProjectionWrites()->create('show-seats', 's/1', '{"free":40}'));
         $projection = $tx->getProjection('show-seats', 's/1');
         self::assertNotNull($projection);
         self::assertNull($projection->version);
@@ -132,25 +134,62 @@ final class TransactionTest extends TestCase
         self::assertSame('{"free":40}', $committed->payload);
 
         $tx = $this->client->beginTransaction();
-        $tx->saveProjection('show-seats', 's/1', '{"free":39}');
-        $tx->deleteProjection('seat-hold', 's1-A6');
+        $tx->getProjection('show-seats', 's/1');
+        $tx->getProjection('seat-hold', 's1-A6');
+        $tx->writeProjections(
+            new TxProjectionWrites()
+                ->replace('show-seats', 's/1', '{"free":39}')
+                ->delete('seat-hold', 's1-A6'),
+        );
         $tx->commit();
         self::assertSame('{"free":39}', $this->client->getProjection('show-seats', 's/1')?->payload);
 
         $tx = $this->client->beginTransaction();
-        $tx->deleteProjection('show-seats', 's/1');
+        $tx->getProjection('show-seats', 's/1');
+        $tx->writeProjections(new TxProjectionWrites()->delete('show-seats', 's/1'));
         self::assertNull($tx->getProjection('show-seats', 's/1'));
         $tx->commit();
         self::assertNull($this->client->getProjection('show-seats', 's/1'));
     }
 
-    public function testAProjectionChangedSinceItWasRead(): void
+    public function testAProjectionReplacedWithoutARead(): void
+    {
+        $tx = $this->client->beginTransaction();
+
+        try {
+            $tx->writeProjections(new TxProjectionWrites()->replace('show-seats', 's1', '{"free":40}'));
+            self::fail('expected an InvalidRequestException');
+        } catch (InvalidRequestException) {
+        }
+
+        self::assertFalse($tx->isActive());
+    }
+
+    public function testAProjectionCreatedTwice(): void
     {
         $other = TestServer::get($this)->client();
         $first = $this->client->beginTransaction();
         $second = $other->beginTransaction();
-        $first->saveProjection('show-seats', 's1', '{"free":40}');
-        $second->saveProjection('show-seats', 's1', '{"free":39}');
+        $first->writeProjections(new TxProjectionWrites()->create('show-seats', 's1', '{"free":40}'));
+        $second->writeProjections(new TxProjectionWrites()->create('show-seats', 's1', '{"free":39}'));
+
+        $first->commit();
+
+        $this->expectException(ConcurrencyException::class);
+        $this->expectExceptionMessage('projection show-seats/s1 already exists');
+        $second->commit();
+    }
+
+    public function testAProjectionChangedSinceItWasRead(): void
+    {
+        $this->client->writeProjections(new ProjectionWrites()->create('show-seats', 's1', '{"free":41}'));
+        $other = TestServer::get($this)->client();
+        $first = $this->client->beginTransaction();
+        $second = $other->beginTransaction();
+        $first->getProjection('show-seats', 's1');
+        $second->getProjection('show-seats', 's1');
+        $first->writeProjections(new TxProjectionWrites()->replace('show-seats', 's1', '{"free":40}'));
+        $second->writeProjections(new TxProjectionWrites()->replace('show-seats', 's1', '{"free":39}'));
 
         $first->commit();
 
