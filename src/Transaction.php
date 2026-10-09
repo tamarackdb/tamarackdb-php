@@ -151,7 +151,7 @@ final class Transaction
      * transaction is over afterwards, whatever the outcome, except after a
      * TransactionBusyException. If the response is lost, the commit can't
      * be sent again: see
-     * https://tamarackdb.github.io/docs/http-api/transactions/#a-lost-response
+     * https://tamarackdb.github.io/docs/development/http-api/#commit
      *
      * @throws NoActiveTransactionException when the transaction is over
      * @throws ConcurrencyException when what the transaction read changed since: run the whole command again

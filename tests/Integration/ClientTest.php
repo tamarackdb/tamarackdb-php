@@ -12,7 +12,6 @@ use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
 use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
-use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\AllEvents;
 use TamarackDB\Query\EventType;
@@ -39,7 +38,7 @@ final class ClientTest extends TestCase
 
         self::assertSame('ok', $health->status);
         self::assertFalse($health->paused);
-        self::assertSame('v0.31.0', $health->version);
+        self::assertSame('v0.33.0', $health->version);
     }
 
     public function testPause(): void
@@ -49,9 +48,6 @@ final class ClientTest extends TestCase
         $point = $this->client->pause();
         try {
             self::assertSame(2, $point->lastSequence);
-            $events = $this->client->readEvents(new AllEvents());
-            iterator_to_array($events);
-            self::assertSame($events->storeId(), $point->storeId);
             self::assertTrue($this->client->health()->paused);
             $this->client->writeProjections(new ProjectionWrites()->create('user-profile', '1', '{}'));
 
@@ -142,22 +138,15 @@ final class ClientTest extends TestCase
         iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 1_000_000));
     }
 
-    public function testFollowingEventsWithTheStoreId(): void
+    public function testFollowingEvents(): void
     {
         $this->appendUsers(2);
         $events = $this->client->readEvents(new AllEvents());
         $last = self::sequences(iterator_to_array($events, false))[1];
-        $storeId = $events->storeId();
-        self::assertNotNull($storeId);
 
         $this->appendUsers(1);
-        $next = $this->client->readEvents(new AllEvents(), afterSequence: $last, storeId: $storeId);
+        $next = $this->client->readEvents(new AllEvents(), afterSequence: $last);
         self::assertSame([3], self::sequences(iterator_to_array($next, false)));
-        self::assertSame($storeId, $next->storeId());
-
-        TestServer::reset($this->client);
-        $this->expectException(StoreChangedException::class);
-        iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: $last, storeId: $storeId));
     }
 
     public function testWriteProjections(): void

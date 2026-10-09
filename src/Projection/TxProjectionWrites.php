@@ -18,7 +18,7 @@ use TamarackDB\Internal\ProjectionKeys;
  *
  * A create needs no read. A replace or a delete needs a read of the
  * projection in the transaction, or a create earlier in it. See
- * https://tamarackdb.github.io/docs/http-api/transactions/#writing-projections
+ * https://tamarackdb.github.io/docs/development/http-api/#write-projections
  */
 final class TxProjectionWrites implements \Countable
 {

@@ -11,7 +11,6 @@ use TamarackDB\Exception\NoActiveTransactionException;
 use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
-use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TimeoutException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\WriteQueueFullException;
@@ -126,27 +125,21 @@ final class Client
      * write. A page cut short is resumed after the last event received, so
      * no event is skipped or repeated.
      *
-     * To follow new events, keep the last Sequence Position you got and
-     * the store ID of the read (Events::storeId()). Read again later with
-     * both. If the store was reset in between, the read throws a
-     * StoreChangedException: start over from the beginning.
+     * To follow new events, keep the last Sequence Position you got, and
+     * read again later after it.
      *
      * A decision reads in its transaction instead, with
      * Transaction::readEvents().
      *
      * @param int|null $afterSequence only events after this Sequence Position
-     * @param string|null $storeId the store ID $afterSequence comes from
      * @param int|null $pageSize events per request, or null for the server's default
-     *
-     * @throws StoreChangedException when a page comes from another store ID
      */
     public function readEvents(
         Query|AllEvents|NoEvents $query,
         ?int $afterSequence = null,
-        ?string $storeId = null,
         ?int $pageSize = null,
     ): Events {
-        return $this->api->readEvents($query, $afterSequence, $storeId, $pageSize);
+        return $this->api->readEvents($query, $afterSequence, $pageSize);
     }
 
     /**
@@ -216,7 +209,7 @@ final class Client
      * Stops transactions from beginning, and returns once the pause is in
      * place. While the server answers that transactions are still open,
      * it asks again every $retryAfter milliseconds. See
-     * https://tamarackdb.github.io/docs/http-api/pause/
+     * https://tamarackdb.github.io/docs/development/http-api/#pause-and-resume
      *
      * @throws InvalidArgumentException when $retryAfter is below 1
      * @throws WriteQueueFullException when too many requests are already waiting
@@ -247,7 +240,7 @@ final class Client
     /**
      * Refreshes the statistics SQLite plans queries with, in its turn in
      * the server's queue. See
-     * https://tamarackdb.github.io/docs/http-api/optimize/
+     * https://tamarackdb.github.io/docs/development/http-api/#optimize
      *
      * @throws TimeoutException when the turn and the optimize didn't end in time
      * @throws WriteQueueFullException when too many requests are already waiting

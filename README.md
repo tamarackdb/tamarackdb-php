@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.31.0.
+application. It is tested against TamarackDB v0.33.0.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ A command runs in one transaction, which lives in the server. Each decision
 reads events, then writes its events, or none. Your event handlers react,
 your projections are read and written, and the commit writes everything at
 once, or nothing. How it works is in
-[Transactions](https://tamarackdb.github.io/docs/concepts/transactions/).
+[Transactions](https://tamarackdb.github.io/docs/development/concepts/#transactions).
 
 ```php
 use TamarackDB\Event\NewEvent;
@@ -89,7 +89,7 @@ try {
 - `rollback()` never throws, and does nothing on a transaction that is
   already over: it's safe in any error handler.
 - If a commit's response is lost, the commit can't be sent again. See
-  [A lost response](https://tamarackdb.github.io/docs/http-api/transactions/#a-lost-response).
+  [A lost response](https://tamarackdb.github.io/docs/development/http-api/#commit).
 
 ## Reading events
 
@@ -127,19 +127,15 @@ resumed after the last event received, so no event is skipped or repeated.
 ```php
 use TamarackDB\Query\AllEvents;
 
-$events = $client->readEvents(new AllEvents(), afterSequence: $last, storeId: $storeId, pageSize: 500);
+$events = $client->readEvents(new AllEvents(), afterSequence: $last, pageSize: 500);
 foreach ($events as $event) {
     // Every event is an Event, with its sequence.
     $last = $event->sequence;
 }
-$storeId = $events->storeId();
 ```
 
-To follow new events, keep the last Sequence Position you read and the
-store ID, and pass both to the next read. If the store was reset in
-between, the read throws a `StoreChangedException`: the position no longer
-means anything, so start over from the beginning (see
-[Store ID](https://tamarackdb.github.io/docs/concepts/store-id/)).
+To follow new events, keep the last Sequence Position you read, and pass it
+to the next read.
 
 ### Queries
 
@@ -190,7 +186,7 @@ $result = $tx->appendEvents([
 
 A projection is an opaque payload identified by type and id. In a
 transaction, it's written with the events it's computed from (see
-[Projections](https://tamarackdb.github.io/docs/concepts/projections/)).
+[Projections](https://tamarackdb.github.io/docs/development/concepts/#projections)).
 
 ```php
 use TamarackDB\Projection\TxProjectionWrites;
@@ -256,7 +252,7 @@ foreach ($client->readEvents(new AllEvents()) as $event) {
 ```
 
 `writeProjections()` and the bulk deletes wait for their turn in the
-server's queue. See [rebuilds](https://tamarackdb.github.io/docs/concepts/projections/#rebuilds)
+server's queue. See [rebuilds](https://tamarackdb.github.io/docs/development/concepts/#rebuilds)
 for how to run one.
 
 ## Pause
@@ -264,14 +260,13 @@ for how to run one.
 ```php
 $point = $client->pause();  // returns once the pause is in place
 $point->lastSequence;       // int
-$point->storeId;            // string
 
 $client->resume();
 ```
 
 While transactions are still open, `pause()` asks the server again every
 `$retryAfter` milliseconds (1000 by default): `$client->pause(retryAfter: 200)`.
-See [Pause](https://tamarackdb.github.io/docs/http-api/pause/).
+See [Pause](https://tamarackdb.github.io/docs/development/http-api/#pause-and-resume).
 
 ## Errors
 
@@ -293,7 +288,6 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
 | `TransactionAlreadyActiveException` | `beginTransaction()` while the client has an active transaction |
 | `NoActiveTransactionException` | a call on a transaction that is over, or `getTransaction()` without one |
-| `StoreChangedException` | a read outside a transaction got another store ID: the store was reset |
 | `TransportException` | no full response: server unreachable, connection dropped |
 | `TimeoutException` | a `TransportException`: the client stopped waiting |
 | `ProtocolException` | a response this client can't make sense of |

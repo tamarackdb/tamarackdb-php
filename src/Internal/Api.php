@@ -33,8 +33,6 @@ final class Api
 {
     public const string VERSION_HEADER = 'X-Tamarackdb-Version';
 
-    public const string STORE_HEADER = 'X-Tamarackdb-Store';
-
     /**
      * How many times in a row a read resumes a page that was cut short,
      * without getting any new event, before giving up.
@@ -62,18 +60,17 @@ final class Api
     }
 
     /**
-     * Reads committed events. Every page must come from $storeId, or from
-     * the store of the first page when $storeId is null.
+     * Reads committed events.
      */
-    public function readEvents(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?string $storeId, ?int $pageSize): Events
+    public function readEvents(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize): Events
     {
-        return new Events($storeId, fn(Events $events): \Generator => $this->pages($query, $afterSequence, $pageSize, $events));
+        return new Events($this->pages($query, $afterSequence, $pageSize));
     }
 
     /**
      * @return \Generator<int, Event>
      */
-    private function pages(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize, Events $events): \Generator
+    private function pages(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize): \Generator
     {
         $body = ['query' => self::query($query)];
         if ($pageSize !== null) {
@@ -93,7 +90,6 @@ final class Api
                     '/events',
                     $this->headers(true),
                     Json::encode($body),
-                    onHeaders: static fn(array $headers) => $events->receiveStoreId(self::storeId($headers, 'QUERY /events')),
                 );
                 foreach ($lines as $line) {
                     $data = Json::decodeObject($line);
@@ -233,25 +229,12 @@ final class Api
             throw new ProtocolException('invalid POST /pause response');
         }
 
-        return new PausePoint($data['lastSequence'], self::storeId($response->headers, 'POST /pause'));
+        return new PausePoint($data['lastSequence']);
     }
 
     private static function txPath(string $txId): string
     {
         return '/tx/' . rawurlencode($txId);
-    }
-
-    /**
-     * @param array<string, string> $headers
-     */
-    private static function storeId(array $headers, string $request): string
-    {
-        $storeId = $headers[strtolower(self::STORE_HEADER)] ?? '';
-        if ($storeId === '') {
-            throw new ProtocolException($request . ' response without a store ID');
-        }
-
-        return $storeId;
     }
 
     /**

@@ -70,7 +70,6 @@ final class CurlTransport implements Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        ?\Closure $onHeaders = null,
     ): \Generator {
         $responseHeaders = [];
         $ch = $this->handle($method, $path, $headers, $body, $responseHeaders);
@@ -91,11 +90,6 @@ final class CurlTransport implements Transport
             do {
                 $running = $this->step($mh);
                 if ($buffer !== '' && curl_getinfo($ch, CURLINFO_RESPONSE_CODE) === 200) {
-                    // The body has started, so every header has arrived.
-                    if ($onHeaders !== null) {
-                        $onHeaders($responseHeaders);
-                        $onHeaders = null;
-                    }
                     $lines = explode("\n", $buffer);
                     $buffer = array_pop($lines);
                     foreach ($lines as $line) {
@@ -115,9 +109,6 @@ final class CurlTransport implements Transport
             $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
             if ($status !== 200) {
                 throw ServerException::fromResponse(new Response($status, $responseHeaders, $buffer));
-            }
-            if ($onHeaders !== null) {
-                $onHeaders($responseHeaders);
             }
             $line = rtrim($buffer, "\r");
             if ($line !== '') {

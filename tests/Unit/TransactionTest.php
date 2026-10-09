@@ -214,7 +214,7 @@ final class TransactionTest extends TestCase
 
     public function testATransactionReadCutShortAbandonsTheTransaction(): void
     {
-        $this->begin(new CutStream([Responses::eventLine(1), Responses::eventLine(2)], []), Responses::noContent());
+        $this->begin(new CutStream([Responses::eventLine(1), Responses::eventLine(2)]), Responses::noContent());
 
         try {
             $this->tx->readEvents(new AllEvents());

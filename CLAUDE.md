@@ -7,10 +7,10 @@ assume a path, ask for it when you need to read the server's code.
 
 ## Source of truth
 
-What a client library must do is on the site, page Client libraries,
-<https://tamarackdb.github.io/docs/integration/client-libraries/>. The HTTP
-contract is in the HTTP API section, starting at
-<https://tamarackdb.github.io/docs/http-api/conventions/>. Read both before
+What a client library must do is on the site, page Writing a Client,
+<https://tamarackdb.github.io/docs/development/writing-a-client/>. The HTTP
+contract is on the HTTP API page,
+<https://tamarackdb.github.io/docs/development/http-api/>. Read both before
 changing how the client keeps transactions or talks to the server. Link to
 the site, never to the `.md` files of the server repo. When the site and the
 Go code (`internal/api/` in the server repo) disagree, the Go code is what
@@ -74,7 +74,7 @@ comments, and the README are in English.
   Condition, generator, etc.): they are the real names of things. Simplify
   sentence length and phrasing around them, not the technical precision.
 - Use the server's own terms, as the site defines them: transaction, write,
-  store ID, Sequence Position, Append Condition, projection, projection
+  Sequence Position, Append Condition, projection, projection
   rebuild, decision model, event handler, projector, processor.
 - Never use an em-dash ("—"). Use a comma, colon, semicolon, parentheses,
   or a new sentence instead.

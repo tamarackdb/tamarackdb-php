@@ -9,7 +9,6 @@ use TamarackDB\Client;
 use TamarackDB\Event\Event;
 use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\ProtocolException;
-use TamarackDB\Exception\StoreChangedException;
 use TamarackDB\Exception\TransportException;
 use TamarackDB\Http\Response;
 use TamarackDB\Projection\ProjectionWrites;
@@ -81,63 +80,10 @@ final class ClientTest extends TestCase
         self::assertSame(['query' => 'none'], $this->transport->body(0));
     }
 
-    public function testReadEventsGivesTheStoreId(): void
-    {
-        $this->transport->push(Responses::page([1], false));
-
-        $events = $this->client->readEvents(new AllEvents());
-        self::assertNull($events->storeId());
-        iterator_to_array($events, false);
-
-        self::assertSame(Responses::STORE, $events->storeId());
-    }
-
-    public function testReadEventsFromTheGivenStore(): void
-    {
-        $this->transport->push(Responses::page([4], false));
-
-        $events = $this->client->readEvents(new AllEvents(), afterSequence: 3, storeId: Responses::STORE);
-
-        self::assertCount(1, iterator_to_array($events, false));
-        self::assertSame(Responses::STORE, $events->storeId());
-    }
-
-    public function testReadEventsFromAnotherStore(): void
-    {
-        $this->transport->push(Responses::page([1], false, 'other-store'));
-
-        $this->expectException(StoreChangedException::class);
-        iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: 3, storeId: Responses::STORE));
-    }
-
-    public function testReadEventsWhenTheStoreChangesBetweenPages(): void
-    {
-        $this->transport->push(Responses::page([1, 2], true), Responses::page([1], false, 'other-store'));
-
-        $seen = [];
-        try {
-            foreach ($this->client->readEvents(new AllEvents(), pageSize: 2) as $event) {
-                $seen[] = self::sequence($event);
-            }
-            self::fail('expected a StoreChangedException');
-        } catch (StoreChangedException) {
-        }
-
-        self::assertSame([1, 2], $seen);
-    }
-
-    public function testReadEventsWithoutAStoreId(): void
-    {
-        $this->transport->push(new Response(200, [], Responses::eventLine(1) . "\n"));
-
-        $this->expectException(ProtocolException::class);
-        iterator_to_array($this->client->readEvents(new AllEvents()));
-    }
-
     public function testReadEventsResumesAPageWithoutTrailer(): void
     {
         $this->transport->push(
-            new Response(200, ['x-tamarackdb-store' => Responses::STORE], Responses::eventLine(1) . "\n" . Responses::eventLine(2) . "\n"),
+            new Response(200, [], Responses::eventLine(1) . "\n" . Responses::eventLine(2) . "\n"),
             Responses::page([3], false),
         );
 
@@ -176,7 +122,7 @@ final class ClientTest extends TestCase
 
     public function testReadEventsRejectsGarbage(): void
     {
-        $this->transport->push(new Response(200, ['x-tamarackdb-store' => Responses::STORE], "not json\n"));
+        $this->transport->push(new Response(200, [], "not json\n"));
 
         $this->expectException(ProtocolException::class);
         iterator_to_array($this->client->readEvents(new AllEvents()));
@@ -263,25 +209,16 @@ final class ClientTest extends TestCase
         $this->transport->push(
             Responses::json(['openTransactions' => 2], 202),
             Responses::json(['openTransactions' => 1], 202),
-            new Response(200, ['content-type' => 'application/json', 'x-tamarackdb-store' => Responses::STORE], '{"lastSequence":5042}'),
+            Responses::json(['lastSequence' => 5042]),
         );
 
         $point = $this->client->pause(retryAfter: 1);
 
         self::assertSame(5042, $point->lastSequence);
-        self::assertSame(Responses::STORE, $point->storeId);
         self::assertSame(
             [['POST', '/pause'], ['POST', '/pause'], ['POST', '/pause']],
             array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
         );
-    }
-
-    public function testPauseWithoutAStoreId(): void
-    {
-        $this->transport->push(Responses::json(['lastSequence' => 0]));
-
-        $this->expectException(ProtocolException::class);
-        $this->client->pause();
     }
 
     public function testPauseRejectsANonPositiveRetryAfter(): void

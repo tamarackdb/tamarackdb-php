@@ -34,11 +34,7 @@ interface Transport
      *
      * When the consumer stops early, the connection is closed.
      *
-     * $onHeaders gets the response headers of a 200 response, keyed by
-     * lowercase name, once, before the first line.
-     *
      * @param array<string, string> $headers
-     * @param (\Closure(array<string, string>): void)|null $onHeaders
      *
      * @return \Generator<int, string>
      *
@@ -50,6 +46,5 @@ interface Transport
         string $path,
         array $headers = [],
         ?string $body = null,
-        ?\Closure $onHeaders = null,
     ): \Generator;
 }
