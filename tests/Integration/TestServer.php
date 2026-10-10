@@ -32,13 +32,13 @@ final class TestServer
     ) {}
 
     /**
-     * Empties the store: the server only resets during a pause.
+     * Empties the store: every event, then every projection. Sequence
+     * Positions go on, so a test never expects a given position.
      */
-    public static function reset(Client $client): void
+    public static function emptyStore(Client $client): void
     {
-        $client->pause(retryAfter: 10);
-        $client->reset();
-        $client->resume();
+        $client->deleteAllEvents();
+        $client->deleteAllProjections();
     }
 
     /**

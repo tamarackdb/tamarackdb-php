@@ -193,6 +193,18 @@ final class ClientTest extends TestCase
         );
     }
 
+    public function testDeleteAllEvents(): void
+    {
+        $this->transport->push(Responses::noContent());
+
+        $this->client->deleteAllEvents();
+
+        self::assertSame(
+            [['DELETE', '/events']],
+            array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
+        );
+    }
+
     public function testHealth(): void
     {
         $this->transport->push(Responses::json(['status' => 'ok', 'paused' => true, 'version' => 'v0.30.0']));
@@ -229,14 +241,13 @@ final class ClientTest extends TestCase
 
     public function testServerStateCalls(): void
     {
-        $this->transport->push(Responses::noContent(), Responses::noContent(), Responses::noContent());
+        $this->transport->push(Responses::noContent(), Responses::noContent());
 
         $this->client->resume();
         $this->client->optimize();
-        $this->client->reset();
 
         self::assertSame(
-            [['POST', '/resume'], ['POST', '/optimize'], ['POST', '/reset']],
+            [['POST', '/resume'], ['POST', '/optimize']],
             array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
         );
     }

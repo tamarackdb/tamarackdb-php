@@ -10,7 +10,6 @@ use TamarackDB\Event\Event;
 use TamarackDB\Event\NewEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
-use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Query\AllEvents;
@@ -29,7 +28,7 @@ final class ClientTest extends TestCase
     protected function setUp(): void
     {
         $this->client = TestServer::get($this)->client();
-        TestServer::reset($this->client);
+        TestServer::emptyStore($this->client);
     }
 
     public function testHealth(): void
@@ -38,16 +37,17 @@ final class ClientTest extends TestCase
 
         self::assertSame('ok', $health->status);
         self::assertFalse($health->paused);
-        self::assertSame('v0.33.0', $health->version);
+        self::assertSame('v0.36.0', $health->version);
     }
 
     public function testPause(): void
     {
         $this->appendUsers(2);
+        $last = self::sequences(iterator_to_array($this->client->readEvents(new AllEvents()), false))[1];
 
         $point = $this->client->pause();
         try {
-            self::assertSame(2, $point->lastSequence);
+            self::assertSame($last, $point->lastSequence);
             self::assertTrue($this->client->health()->paused);
             $this->client->writeProjections(new ProjectionWrites()->create('user-profile', '1', '{}'));
 
@@ -66,12 +66,6 @@ final class ClientTest extends TestCase
 
         self::assertFalse($this->client->health()->paused);
         $this->appendUsers(1);
-    }
-
-    public function testResetOutsideAPause(): void
-    {
-        $this->expectException(NotPausedException::class);
-        $this->client->reset();
     }
 
     public function testOptimize(): void
@@ -93,7 +87,7 @@ final class ClientTest extends TestCase
         $events = iterator_to_array($this->client->readEvents(new AllEvents()), false);
 
         self::assertCount(2, $events);
-        self::assertSame(1, $events[0]->sequence);
+        self::assertSame($events[0]->sequence + 1, $events[1]->sequence);
         self::assertSame('user-created', $events[0]->type);
         self::assertSame(['courseId' => ['a', 'b'], 'userId' => '123'], $events[0]->identifiers);
         self::assertSame(['tenantId' => 'acme'], $events[0]->metadata);
@@ -109,16 +103,17 @@ final class ClientTest extends TestCase
         $this->appendUsers(5);
 
         $byId = iterator_to_array($this->client->readEvents(new Query(Identifier::is('userId', '3'))), false);
-        self::assertSame([3], self::sequences($byId));
+        self::assertSame(['3'], self::userIds($byId));
 
         $byType = iterator_to_array($this->client->readEvents(
             new Query(EventType::in('user-created'), Identifier::is('userId', '1'))
                 ->or(EventType::in('user-created'), Identifier::is('userId', '4')),
         ), false);
-        self::assertSame([1, 4], self::sequences($byType));
+        self::assertSame(['1', '4'], self::userIds($byType));
 
-        $after = iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: 3), false);
-        self::assertSame([4, 5], self::sequences($after));
+        $third = self::sequences(iterator_to_array($this->client->readEvents(new AllEvents()), false))[2];
+        $after = iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: $third), false);
+        self::assertSame(['4', '5'], self::userIds($after));
 
         self::assertSame([], iterator_to_array($this->client->readEvents(new NoEvents()), false));
     }
@@ -129,7 +124,7 @@ final class ClientTest extends TestCase
 
         $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2), false);
 
-        self::assertSame([1, 2, 3, 4, 5, 6, 7], self::sequences($events));
+        self::assertSame(['1', '2', '3', '4', '5', '6', '7'], self::userIds($events));
     }
 
     public function testAnInvalidRequest(): void
@@ -146,7 +141,7 @@ final class ClientTest extends TestCase
 
         $this->appendUsers(1);
         $next = $this->client->readEvents(new AllEvents(), afterSequence: $last);
-        self::assertSame([3], self::sequences(iterator_to_array($next, false)));
+        self::assertSame([$last + 1], self::sequences(iterator_to_array($next, false)));
     }
 
     public function testWriteProjections(): void
@@ -189,6 +184,20 @@ final class ClientTest extends TestCase
         self::assertNull($this->client->getProjection('user-list-entry', '1'));
     }
 
+    public function testDeleteAllEvents(): void
+    {
+        $this->appendUsers(2);
+        $last = self::sequences(iterator_to_array($this->client->readEvents(new AllEvents()), false))[1];
+        $this->client->writeProjections(new ProjectionWrites()->create('user-profile', '1', 'x'));
+
+        $this->client->deleteAllEvents();
+
+        self::assertSame([], iterator_to_array($this->client->readEvents(new AllEvents()), false));
+        self::assertNotNull($this->client->getProjection('user-profile', '1'));
+        $this->appendUsers(1);
+        self::assertSame([$last + 1], self::sequences(iterator_to_array($this->client->readEvents(new AllEvents()), false)));
+    }
+
     private function appendUsers(int $count): void
     {
         $tx = $this->client->beginTransaction();
@@ -208,5 +217,15 @@ final class ClientTest extends TestCase
     private static function sequences(array $events): array
     {
         return array_map(static fn(Event $e): int => $e->sequence, $events);
+    }
+
+    /**
+     * @param list<Event> $events
+     *
+     * @return list<string|list<string>|null>
+     */
+    private static function userIds(array $events): array
+    {
+        return array_map(static fn(Event $e): string|array|null => $e->identifiers['userId'] ?? null, $events);
     }
 }

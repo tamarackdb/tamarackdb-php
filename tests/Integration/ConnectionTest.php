@@ -15,7 +15,7 @@ final class ConnectionTest extends TestCase
     public function testUnixSocket(): void
     {
         $client = TestServer::get($this, unixSocket: true)->client();
-        TestServer::reset($client);
+        TestServer::emptyStore($client);
 
         $tx = $client->beginTransaction();
         $tx->readEvents(new NoEvents());

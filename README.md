@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.33.0.
+application. It is tested against TamarackDB v0.36.0.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ $client = Client::http('http://127.0.0.1:8085', token: 'secret', timeout: 120.0)
 `timeout` is how long the client waits for a response (60 seconds by
 default). It includes the time a request waits for its turn in the server's
 queue: a commit, `writeProjections()`, the bulk deletes, `pause()`,
-`resume()`, `optimize()`, and `reset()`. Past it, the client throws a
+`resume()`, and `optimize()`. Past it, the client throws a
 `TimeoutException`.
 
 ## Handling a command
@@ -276,7 +276,6 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 |---|---|
 | `ConcurrencyException` | 409: a commit whose reads or projections changed since, or a projection version that doesn't match |
 | `TransactionBusyException` | 409: another call still runs on the transaction, for example one that timed out. The transaction goes on |
-| `NotPausedException` | 409: `reset()` while no pause is in place |
 | `InvalidRequestException` | 400: the server rejected the request, or a call that breaks a rule of transactions |
 | `UnauthorizedException` | 401: missing or wrong token |
 | `TransactionNotFoundException` | 404: the transaction expired, or an error ended it |
@@ -285,6 +284,7 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `WriteQueueFullException` | 503: too many requests are waiting in the server's queue |
 | `ShuttingDownException` | 503: the server is shutting down |
 | `PausedException` | 503: `beginTransaction()` while a pause is requested or in place |
+| `TooManyTransactionsException` | 503: `beginTransaction()` while the server has as many open transactions as it allows |
 | `UnavailableException` | 503: `health()` only, storage is unreachable |
 | `TransactionAlreadyActiveException` | `beginTransaction()` while the client has an active transaction |
 | `NoActiveTransactionException` | a call on a transaction that is over, or `getTransaction()` without one |
@@ -301,7 +301,13 @@ Every server error extends `ServerException`, with `$statusCode`,
 ```php
 $client->health();    // Health { status, paused, version }
 $client->optimize();  // refreshes the statistics SQLite plans queries with
-$client->reset();     // devMode only, during a pause: deletes every event and projection
+```
+
+In development mode, a test suite empties the store with:
+
+```php
+$client->deleteAllEvents();       // Sequence Positions go on: the next event doesn't get 1
+$client->deleteAllProjections();
 ```
 
 ## Development

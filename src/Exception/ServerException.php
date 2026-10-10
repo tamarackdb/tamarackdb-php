@@ -22,12 +22,12 @@ class ServerException extends \RuntimeException implements TamarackDBException
         'TransactionNotFound' => TransactionNotFoundException::class,
         'ConcurrencyException' => ConcurrencyException::class,
         'TransactionBusy' => TransactionBusyException::class,
-        'NotPaused' => NotPausedException::class,
         'PayloadTooLarge' => PayloadTooLargeException::class,
         'InternalError' => InternalErrorException::class,
         'WriteQueueFull' => WriteQueueFullException::class,
         'ShuttingDown' => ShuttingDownException::class,
         'Paused' => PausedException::class,
+        'TooManyTransactions' => TooManyTransactionsException::class,
         'Unavailable' => UnavailableException::class,
     ];
 

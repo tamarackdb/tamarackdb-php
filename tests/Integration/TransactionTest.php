@@ -11,6 +11,7 @@ use TamarackDB\Event\NewEvent;
 use TamarackDB\Event\PendingEvent;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidRequestException;
+use TamarackDB\Exception\TooManyTransactionsException;
 use TamarackDB\Exception\TransactionNotFoundException;
 use TamarackDB\Projection\ProjectionWrites;
 use TamarackDB\Projection\TxProjectionWrites;
@@ -28,7 +29,7 @@ final class TransactionTest extends TestCase
     protected function setUp(): void
     {
         $this->client = TestServer::get($this)->client();
-        TestServer::reset($this->client);
+        TestServer::emptyStore($this->client);
     }
 
     public function testAReadSeesCommittedThenPendingEvents(): void
@@ -46,7 +47,8 @@ final class TransactionTest extends TestCase
 
         self::assertCount(2, $events);
         self::assertInstanceOf(Event::class, $events[0]);
-        self::assertSame(1, $events[0]->sequence);
+        self::assertSame(['seat' => 'A4', 'showId' => 's1'], $events[0]->identifiers);
+        $first = $events[0]->sequence;
         self::assertInstanceOf(PendingEvent::class, $events[1]);
         self::assertSame(['seat' => 'A5', 'showId' => 's1'], $events[1]->identifiers);
         self::assertSame('{}', $events[1]->payload);
@@ -54,9 +56,9 @@ final class TransactionTest extends TestCase
 
         $tx->commit();
 
-        $committed = iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: 1), false);
+        $committed = iterator_to_array($this->client->readEvents(new AllEvents(), afterSequence: $first), false);
         self::assertCount(1, $committed);
-        self::assertSame(2, $committed[0]->sequence);
+        self::assertSame($first + 1, $committed[0]->sequence);
         self::assertEquals($time, $committed[0]->time);
     }
 
@@ -212,6 +214,18 @@ final class TransactionTest extends TestCase
 
         self::assertFalse($client->inTransaction());
         $tx->rollback();
+    }
+
+    public function testTooManyTransactions(): void
+    {
+        $server = TestServer::get($this, ['TAMARACKDB_MAX_OPEN_TX' => '1']);
+        $tx = $server->client()->beginTransaction();
+        try {
+            $this->expectException(TooManyTransactionsException::class);
+            $server->client()->beginTransaction();
+        } finally {
+            $tx->rollback();
+        }
     }
 
     /**

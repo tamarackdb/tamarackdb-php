@@ -8,10 +8,10 @@ use TamarackDB\Event\Events;
 use TamarackDB\Exception\ConcurrencyException;
 use TamarackDB\Exception\InvalidArgumentException;
 use TamarackDB\Exception\NoActiveTransactionException;
-use TamarackDB\Exception\NotPausedException;
 use TamarackDB\Exception\PausedException;
 use TamarackDB\Exception\ProtocolException;
 use TamarackDB\Exception\TimeoutException;
+use TamarackDB\Exception\TooManyTransactionsException;
 use TamarackDB\Exception\TransactionAlreadyActiveException;
 use TamarackDB\Exception\WriteQueueFullException;
 use TamarackDB\Http\CurlTransport;
@@ -86,6 +86,7 @@ final class Client
      *
      * @throws TransactionAlreadyActiveException when this client already has an active transaction
      * @throws PausedException when a pause is requested or in place
+     * @throws TooManyTransactionsException when the server already has as many open transactions as it allows
      */
     public function beginTransaction(): Transaction
     {
@@ -192,6 +193,20 @@ final class Client
         $this->api->call('DELETE', '/projections');
     }
 
+    /**
+     * Deletes every event, for test suites. Only exists when the server has
+     * devMode on. Projections stay: delete them with deleteAllProjections().
+     * Sequence Positions go on: the next event doesn't get 1. The call waits
+     * for its turn in the server's queue, not for open transactions.
+     *
+     * @throws TimeoutException when the turn and the delete didn't end in time
+     * @throws WriteQueueFullException when too many requests are already waiting
+     */
+    public function deleteAllEvents(): void
+    {
+        $this->api->call('DELETE', '/events');
+    }
+
     public function health(): Health
     {
         $data = Json::decodeObject($this->api->call('GET', '/health')->body);
@@ -248,17 +263,5 @@ final class Client
     public function optimize(): void
     {
         $this->api->call('POST', '/optimize');
-    }
-
-    /**
-     * Deletes every event and every projection. Only exists when the
-     * server has devMode on, and only runs during a pause: meant for test
-     * suites, never production.
-     *
-     * @throws NotPausedException when no pause is in place
-     */
-    public function reset(): void
-    {
-        $this->api->call('POST', '/reset');
     }
 }
