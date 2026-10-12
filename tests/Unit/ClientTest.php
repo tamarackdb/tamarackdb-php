@@ -130,7 +130,7 @@ final class ClientTest extends TestCase
 
     public function testGetProjection(): void
     {
-        $this->transport->push(new Response(200, ['x-tamarackdb-version' => 'v1'], '{"name":"Ada"}'));
+        $this->transport->push(new Response(200, ['x-tamarackdb-projection-version' => 'v1'], '{"name":"Ada"}'));
 
         $projection = $this->client->getProjection('user profile', 'a/b');
 

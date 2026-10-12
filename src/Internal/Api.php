@@ -31,7 +31,7 @@ use TamarackDB\Query\Query;
  */
 final class Api
 {
-    public const string VERSION_HEADER = 'X-Tamarackdb-Version';
+    public const string PROJECTION_VERSION_HEADER = 'X-Tamarackdb-Projection-Version';
 
     /**
      * How many times in a row a read resumes a page that was cut short,
@@ -194,7 +194,7 @@ final class Api
         if ($txId !== null) {
             return new Projection($type, $id, null, $response->body);
         }
-        $version = $response->header(self::VERSION_HEADER);
+        $version = $response->header(self::PROJECTION_VERSION_HEADER);
         if ($version === null) {
             throw new ProtocolException('GET /projections response without a version');
         }
