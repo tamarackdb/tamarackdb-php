@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.39.0.
+application. It is tested against TamarackDB v0.40.0.
 
 ## Requirements
 

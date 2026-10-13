@@ -185,9 +185,9 @@ final class Api
      */
     public function getProjection(?string $txId, string $type, string $id): ?Projection
     {
-        $path = '/projections/' . rawurlencode($type) . '/' . rawurlencode($id);
+        $path = $txId === null ? '/projections' : self::txPath($txId) . '/projections';
         try {
-            $response = $this->call('GET', $txId === null ? $path : self::txPath($txId) . $path);
+            $response = $this->call('QUERY', $path, ['type' => $type, 'id' => $id]);
         } catch (ProjectionNotFoundException) {
             return null;
         }
@@ -196,7 +196,7 @@ final class Api
         }
         $version = $response->header(self::PROJECTION_VERSION_HEADER);
         if ($version === null) {
-            throw new ProtocolException('GET /projections response without a version');
+            throw new ProtocolException('QUERY /projections response without a version');
         }
 
         return new Projection($type, $id, $version, $response->body);

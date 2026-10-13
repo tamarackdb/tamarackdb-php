@@ -139,7 +139,9 @@ final class ClientTest extends TestCase
         self::assertSame('a/b', $projection->id);
         self::assertSame('v1', $projection->version);
         self::assertSame('{"name":"Ada"}', $projection->payload);
-        self::assertSame('/projections/user%20profile/a%2Fb', $this->transport->requests[0]['path']);
+        self::assertSame('QUERY', $this->transport->requests[0]['method']);
+        self::assertSame('/projections', $this->transport->requests[0]['path']);
+        self::assertSame(['type' => 'user profile', 'id' => 'a/b'], $this->transport->body(0));
     }
 
     public function testGetMissingProjection(): void

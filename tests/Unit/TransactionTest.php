@@ -288,7 +288,8 @@ final class TransactionTest extends TestCase
 
         self::assertNull($this->tx->getProjection('a', '1'));
         self::assertTrue($this->client->inTransaction());
-        self::assertSame(['GET', '/tx/' . self::TX . '/projections/a/1'], $this->request(1));
+        self::assertSame(['QUERY', '/tx/' . self::TX . '/projections'], $this->request(1));
+        self::assertSame(['type' => 'a', 'id' => '1'], $this->transport->body(1));
     }
 
     public function testGetProjectionInATransaction(): void
@@ -300,7 +301,8 @@ final class TransactionTest extends TestCase
         self::assertNotNull($projection);
         self::assertNull($projection->version);
         self::assertSame('{"free":37}', $projection->payload);
-        self::assertSame(['GET', '/tx/' . self::TX . '/projections/show%20seats/s%2F1'], $this->request(1));
+        self::assertSame(['QUERY', '/tx/' . self::TX . '/projections'], $this->request(1));
+        self::assertSame(['type' => 'show seats', 'id' => 's/1'], $this->transport->body(1));
     }
 
     public function testWriteProjections(): void
