@@ -67,10 +67,19 @@ final class Transaction
      * that matches (PendingEvent). There are no pages: the whole response
      * is read before this returns.
      *
+     * With $backwards, the pending events come first, newest first, then
+     * the committed events, newest first. $limit is the most events
+     * returned, pending and committed together. The read's condition
+     * still covers every event that matches $query: with $backwards and
+     * a $limit of 1, the last event is enough to decide, and any newer
+     * match makes the commit fail.
+     *
      * The next call must be appendEvents(), with the events of the
      * decision or an empty list. A response cut short, or one this library
      * can't read, abandons the transaction and throws: run the whole
      * command again.
+     *
+     * @param int|null $limit the most events returned, 1 or more, or null for every one
      *
      * @return list<Event|PendingEvent>
      *
@@ -78,11 +87,11 @@ final class Transaction
      * @throws ServerException when the server refuses the read: the transaction is over
      * @throws TransportException when the response was cut short: the transaction is over
      */
-    public function readEvents(Query|AllEvents|NoEvents $query): array
+    public function readEvents(Query|AllEvents|NoEvents $query, bool $backwards = false, ?int $limit = null): array
     {
         $this->requireActive();
         try {
-            return iterator_to_array($this->api->readTxEvents($this->id, $query), false);
+            return iterator_to_array($this->api->readTxEvents($this->id, $query, $backwards, $limit), false);
         } catch (ServerException $e) {
             $this->endOn($e);
             throw $e;

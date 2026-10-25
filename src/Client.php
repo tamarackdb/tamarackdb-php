@@ -129,18 +129,24 @@ final class Client
      * To follow new events, keep the last Sequence Position you got, and
      * read again later after it.
      *
+     * With $backwards, the read gives the newest events first, in a single
+     * page of at most $pageSize events. It takes no $afterSequence. A
+     * backwards page cut short after its first event throws.
+     *
      * A decision reads in its transaction instead, with
      * Transaction::readEvents().
      *
      * @param int|null $afterSequence only events after this Sequence Position
      * @param int|null $pageSize events per request, or null for the server's default
+     * @param bool $backwards newest first, in a single page
      */
     public function readEvents(
         Query|AllEvents|NoEvents $query,
         ?int $afterSequence = null,
         ?int $pageSize = null,
+        bool $backwards = false,
     ): Events {
-        return $this->api->readEvents($query, $afterSequence, $pageSize);
+        return $this->api->readEvents($query, $afterSequence, $pageSize, $backwards);
     }
 
     /**

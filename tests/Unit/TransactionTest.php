@@ -212,6 +212,17 @@ final class TransactionTest extends TestCase
         self::assertSame(['query' => 'none'], $this->transport->body(1));
     }
 
+    public function testABackwardsTransactionRead(): void
+    {
+        $this->begin(Responses::txRead([self::pendingLine(), Responses::eventLine(3)]));
+
+        $events = $this->tx->readEvents(new AllEvents(), backwards: true, limit: 2);
+
+        self::assertInstanceOf(PendingEvent::class, $events[0]);
+        self::assertInstanceOf(Event::class, $events[1]);
+        self::assertSame(['query' => 'all', 'backwards' => true, 'limit' => 2], $this->transport->body(1));
+    }
+
     public function testATransactionReadCutShortAbandonsTheTransaction(): void
     {
         $this->begin(new CutStream([Responses::eventLine(1), Responses::eventLine(2)]), Responses::noContent());

@@ -62,19 +62,22 @@ final class Api
     /**
      * Reads committed events.
      */
-    public function readEvents(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize): Events
+    public function readEvents(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize, bool $backwards): Events
     {
-        return new Events($this->pages($query, $afterSequence, $pageSize));
+        return new Events($this->pages($query, $afterSequence, $pageSize, $backwards));
     }
 
     /**
      * @return \Generator<int, Event>
      */
-    private function pages(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize): \Generator
+    private function pages(Query|AllEvents|NoEvents $query, ?int $afterSequence, ?int $pageSize, bool $backwards): \Generator
     {
         $body = ['query' => self::query($query)];
         if ($pageSize !== null) {
             $body['limit'] = $pageSize;
+        }
+        if ($backwards) {
+            $body['backwards'] = true;
         }
 
         $failures = 0;
@@ -106,6 +109,11 @@ final class Api
                     throw new TransportException('QUERY /events: the page ended without its trailer');
                 }
             } catch (TransportException $e) {
+                // A backwards page can't be resumed after its last event:
+                // only a page that gave nothing yet is read again.
+                if ($backwards && $progress) {
+                    throw $e;
+                }
                 $failures = $progress ? 1 : $failures + 1;
                 if ($failures >= self::MAX_RESUME_ATTEMPTS) {
                     throw $e;
@@ -113,7 +121,8 @@ final class Api
                 usleep(100_000 * $failures);
                 continue;
             }
-            if (!$hasMore) {
+            // A backwards read is a single page.
+            if (!$hasMore || $backwards) {
                 return;
             }
             $failures = 0;
@@ -135,16 +144,24 @@ final class Api
 
     /**
      * Reads the events of a decision in transaction $txId: the committed
-     * events, then the pending ones.
+     * events, then the pending ones. Backwards, the pending ones come
+     * first, and each group is newest first.
      *
      * @return \Generator<int, Event|PendingEvent>
      *
      * @throws TransportException when the response ends without its trailer
      */
-    public function readTxEvents(string $txId, Query|AllEvents|NoEvents $query): \Generator
+    public function readTxEvents(string $txId, Query|AllEvents|NoEvents $query, bool $backwards, ?int $limit): \Generator
     {
         $path = self::txPath($txId) . '/events';
-        $lines = $this->transport->stream('QUERY', $path, $this->headers(true), Json::encode(['query' => self::query($query)]));
+        $body = ['query' => self::query($query)];
+        if ($backwards) {
+            $body['backwards'] = true;
+        }
+        if ($limit !== null) {
+            $body['limit'] = $limit;
+        }
+        $lines = $this->transport->stream('QUERY', $path, $this->headers(true), Json::encode($body));
         foreach ($lines as $line) {
             $data = Json::decodeObject($line);
             if (\array_key_exists('end', $data)) {

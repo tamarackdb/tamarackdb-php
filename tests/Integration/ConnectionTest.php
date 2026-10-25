@@ -29,7 +29,15 @@ final class ConnectionTest extends TestCase
 
     public function testBearerToken(): void
     {
-        $server = TestServer::get($this, ['TAMARACKDB_ENABLE_AUTH' => 'true', 'TAMARACKDB_AUTH_TOKEN' => 'test-token']);
+        // The server reads its token file at startup only.
+        $tokenFile = sys_get_temp_dir() . '/tdb-token-' . bin2hex(random_bytes(4));
+        file_put_contents($tokenFile, 'test-token');
+        chmod($tokenFile, 0o600);
+        try {
+            $server = TestServer::get($this, ['TAMARACKDB_AUTH_TOKEN_FILE' => $tokenFile]);
+        } finally {
+            unlink($tokenFile);
+        }
 
         self::assertSame('ok', $server->client('test-token')->health()->status);
 

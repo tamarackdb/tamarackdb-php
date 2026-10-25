@@ -80,6 +80,39 @@ final class ClientTest extends TestCase
         self::assertSame(['query' => 'none'], $this->transport->body(0));
     }
 
+    public function testABackwardsReadIsASinglePage(): void
+    {
+        $this->transport->push(Responses::page([5, 4], true));
+
+        $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2, backwards: true), false);
+
+        self::assertSame([5, 4], array_map(self::sequence(...), $events));
+        self::assertCount(1, $this->transport->requests);
+        self::assertSame(['query' => 'all', 'limit' => 2, 'backwards' => true], $this->transport->body(0));
+    }
+
+    public function testABackwardsReadRetriesBeforeItsFirstEvent(): void
+    {
+        $this->transport->push(new TransportException('refused'), Responses::page([5], false));
+
+        $events = iterator_to_array($this->client->readEvents(new AllEvents(), backwards: true), false);
+
+        self::assertSame([5], array_map(self::sequence(...), $events));
+        self::assertSame(['query' => 'all', 'backwards' => true], $this->transport->body(1));
+    }
+
+    public function testABackwardsReadCutShortThrows(): void
+    {
+        $this->transport->push(new CutStream([Responses::eventLine(5)]));
+
+        $this->expectException(TransportException::class);
+        try {
+            iterator_to_array($this->client->readEvents(new AllEvents(), backwards: true));
+        } finally {
+            self::assertCount(1, $this->transport->requests);
+        }
+    }
+
     public function testReadEventsResumesAPageWithoutTrailer(): void
     {
         $this->transport->push(

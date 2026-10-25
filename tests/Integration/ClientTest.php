@@ -37,7 +37,7 @@ final class ClientTest extends TestCase
 
         self::assertSame('ok', $health->status);
         self::assertFalse($health->paused);
-        self::assertSame('v0.40.0', $health->version);
+        self::assertSame('v0.43.0', $health->version);
     }
 
     public function testPause(): void
@@ -125,6 +125,15 @@ final class ClientTest extends TestCase
         $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2), false);
 
         self::assertSame(['1', '2', '3', '4', '5', '6', '7'], self::userIds($events));
+    }
+
+    public function testABackwardsRead(): void
+    {
+        $this->appendUsers(5);
+
+        $events = iterator_to_array($this->client->readEvents(new AllEvents(), pageSize: 2, backwards: true), false);
+
+        self::assertSame(['5', '4'], self::userIds($events));
     }
 
     public function testAnInvalidRequest(): void

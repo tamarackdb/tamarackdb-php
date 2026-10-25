@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.40.0.
+application. It is tested against TamarackDB v0.43.0.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ use TamarackDB\Client;
 $client = Client::http('http://127.0.0.1:8085');
 $client = Client::unixSocket('/run/tamarackdb/tamarackdb.sock');
 
-// With enableAuth on, and your own limits:
+// With authTokenFile set on the server, and your own limits:
 $client = Client::http('http://127.0.0.1:8085', token: 'secret', timeout: 120.0);
 ```
 
@@ -117,6 +117,21 @@ decision or an empty list. A decision that rests on no event reads
 `new NoEvents()` first. A response cut short, or one the client can't read,
 abandons the transaction and throws: run the command again.
 
+`backwards: true` reads the newest events first: the pending events, then
+the committed ones. `limit` is the most events returned, pending and
+committed together. The read's condition still covers every event that
+matches the query. To give an invoice the next number:
+
+```php
+use TamarackDB\Query\EventType;
+
+$tx = $client->beginTransaction();
+$last = $tx->readEvents(new Query(EventType::in('invoice-created')), backwards: true, limit: 1);
+$number = $last === [] ? 1 : (int) $last[0]->identifiers['invoice'] + 1;
+$tx->appendEvents([new NewEvent('invoice-created', ['invoice' => (string) $number])]);
+$tx->commit(); // ConcurrencyException when another invoice was created since the read
+```
+
 ### Outside a transaction
 
 `$client->readEvents()` reads committed events, for a projector that
@@ -136,6 +151,9 @@ foreach ($events as $event) {
 
 To follow new events, keep the last Sequence Position you read, and pass it
 to the next read.
+
+`backwards: true` reads the newest events first, in a single page of at
+most `pageSize` events. It takes no `afterSequence`.
 
 ### Queries
 

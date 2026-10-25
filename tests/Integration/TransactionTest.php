@@ -105,6 +105,58 @@ final class TransactionTest extends TestCase
         self::assertSame(['points-added', 'points-added', 'points-added', 'customer-promoted'], $types);
     }
 
+    public function testABackwardsReadCountsPendingEvents(): void
+    {
+        $tx = $this->client->beginTransaction();
+        $tx->readEvents(new NoEvents());
+        $tx->appendEvents([self::invoice(1), self::invoice(2)]);
+        $tx->commit();
+
+        $tx = $this->client->beginTransaction();
+        $tx->readEvents(new NoEvents());
+        $tx->appendEvents([self::invoice(3)]);
+        $events = $tx->readEvents(new Query(EventType::in('invoice-created')), backwards: true, limit: 2);
+        $tx->appendEvents([]);
+        $tx->rollback();
+
+        self::assertCount(2, $events);
+        self::assertInstanceOf(PendingEvent::class, $events[0]);
+        self::assertSame(['invoice' => '3'], $events[0]->identifiers);
+        self::assertInstanceOf(Event::class, $events[1]);
+        self::assertSame(['invoice' => '2'], $events[1]->identifiers);
+    }
+
+    /**
+     * The next invoice number: each command reads the last invoice. Its
+     * condition covers every invoice, so the second commit fails.
+     */
+    public function testTheNextInvoiceNumber(): void
+    {
+        $tx = $this->client->beginTransaction();
+        $tx->readEvents(new NoEvents());
+        $tx->appendEvents([self::invoice(1001)]);
+        $tx->commit();
+
+        $other = TestServer::get($this)->client();
+        $first = self::createNextInvoice($this->client);
+        $second = self::createNextInvoice($other);
+
+        $first->commit();
+        try {
+            $second->commit();
+            self::fail('expected a ConcurrencyException');
+        } catch (ConcurrencyException) {
+        }
+
+        self::createNextInvoice($other)->commit();
+
+        $numbers = array_map(
+            static fn(Event $e): mixed => $e->identifiers['invoice'],
+            iterator_to_array($this->client->readEvents(new Query(EventType::in('invoice-created'))), false),
+        );
+        self::assertSame(['1001', '1002', '1003'], $numbers);
+    }
+
     public function testEventsWrittenWithoutARead(): void
     {
         $tx = $this->client->beginTransaction();
@@ -251,5 +303,23 @@ final class TransactionTest extends TestCase
     private static function points(int $points): NewEvent
     {
         return new NewEvent('points-added', ['customerId' => 'c1'], payload: (string) $points);
+    }
+
+    /**
+     * Reads the last invoice, and writes the next one.
+     */
+    private static function createNextInvoice(Client $client): Transaction
+    {
+        $tx = $client->beginTransaction();
+        $last = $tx->readEvents(new Query(EventType::in('invoice-created')), backwards: true, limit: 1);
+        $number = $last === [] ? 1001 : (int) $last[0]->payload + 1;
+        $tx->appendEvents([self::invoice($number)]);
+
+        return $tx;
+    }
+
+    private static function invoice(int $number): NewEvent
+    {
+        return new NewEvent('invoice-created', ['invoice' => (string) $number], payload: (string) $number);
     }
 }

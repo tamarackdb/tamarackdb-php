@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace TamarackDB\Event;
 
 /**
- * The committed events of one read, oldest first. Pages are fetched as the
- * events are iterated, and they can be iterated only once.
+ * The committed events of one read, oldest first, or newest first for a
+ * backwards read. Pages are fetched as the events are iterated, and they can
+ * be iterated only once.
  *
  * @implements \IteratorAggregate<int, Event>
  */
