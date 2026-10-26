@@ -60,7 +60,9 @@ its commit was tagged reports another version (such as
 Fix PHPStan errors at their cause. Don't add `@phpstan-ignore` comments,
 baseline entries, or casts just to silence one.
 
-No CI workflow for now.
+The CI workflow (`.github/workflows/ci.yml`) runs the unit tests, PHPStan,
+and PHP-CS-Fixer on each push and pull request to `main`. It doesn't run the
+integration tests: run them by hand.
 
 ## Writing style
 

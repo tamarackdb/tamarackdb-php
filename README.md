@@ -8,6 +8,10 @@ projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
 application. It is tested against TamarackDB v0.43.0.
 
+[![release](https://img.shields.io/packagist/v/tamarackdb/tamarackdb-php)](https://packagist.org/packages/tamarackdb/tamarackdb-php)
+[![ci](https://github.com/tamarackdb/tamarackdb-php/actions/workflows/ci.yml/badge.svg)](https://github.com/tamarackdb/tamarackdb-php/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/tamarackdb/tamarackdb-php)](LICENSE)
+
 ## Requirements
 
 - PHP 8.5 or later, with the `curl` and `json` extensions.
