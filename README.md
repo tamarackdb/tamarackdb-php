@@ -6,7 +6,7 @@ compliant with the [DCB specification](https://dcb.events/specification/).
 It covers the whole HTTP API: transactions, reading and writing events,
 projections, projection rebuilds, and pauses. It is a low-level client,
 meant to be used by an event sourcing framework or directly by an
-application. It is tested against TamarackDB v0.43.0.
+application. It is tested against TamarackDB v0.46.0.
 
 [![release](https://img.shields.io/packagist/v/tamarackdb/tamarackdb-php)](https://packagist.org/packages/tamarackdb/tamarackdb-php)
 [![ci](https://github.com/tamarackdb/tamarackdb-php/actions/workflows/ci.yml/badge.svg)](https://github.com/tamarackdb/tamarackdb-php/actions/workflows/ci.yml)
@@ -303,6 +303,7 @@ Every exception implements `TamarackDB\Exception\TamarackDBException`.
 | `TransactionNotFoundException` | 404: the transaction expired, or an error ended it |
 | `PayloadTooLargeException` | 413: an event, a projection, or the request is too large |
 | `InternalErrorException` | 500 |
+| `StorageFullException` | 507: the server's disk is full. Nothing was written; don't retry until the operator frees space |
 | `WriteQueueFullException` | 503: too many requests are waiting in the server's queue |
 | `ShuttingDownException` | 503: the server is shutting down |
 | `PausedException` | 503: `beginTransaction()` while a pause is requested or in place |

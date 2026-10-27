@@ -24,6 +24,7 @@ final class ServerExceptionTest extends TestCase
         yield [409, 'TransactionBusy', Exception\TransactionBusyException::class];
         yield [413, 'PayloadTooLarge', Exception\PayloadTooLargeException::class];
         yield [500, 'InternalError', Exception\InternalErrorException::class];
+        yield [507, 'StorageFull', Exception\StorageFullException::class];
         yield [503, 'WriteQueueFull', Exception\WriteQueueFullException::class];
         yield [503, 'ShuttingDown', Exception\ShuttingDownException::class];
         yield [503, 'Paused', Exception\PausedException::class];

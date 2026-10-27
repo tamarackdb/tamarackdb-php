@@ -37,7 +37,7 @@ final class ClientTest extends TestCase
 
         self::assertSame('ok', $health->status);
         self::assertFalse($health->paused);
-        self::assertSame('v0.43.0', $health->version);
+        self::assertSame('v0.46.0', $health->version);
     }
 
     public function testPause(): void
