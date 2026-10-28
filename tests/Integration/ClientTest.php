@@ -40,6 +40,15 @@ final class ClientTest extends TestCase
         self::assertSame('v0.46.0', $health->version);
     }
 
+    public function testStats(): void
+    {
+        $stats = $this->client->stats();
+
+        self::assertIsString($stats['startedAt'] ?? null);
+        self::assertIsArray($stats['writes'] ?? null);
+        self::assertIsArray($stats['transactions'] ?? null);
+    }
+
     public function testPause(): void
     {
         $this->appendUsers(2);

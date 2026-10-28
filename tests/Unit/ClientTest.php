@@ -251,6 +251,27 @@ final class ClientTest extends TestCase
         self::assertSame('v0.30.0', $health->version);
     }
 
+    public function testStats(): void
+    {
+        $this->transport->push(Responses::json(['writes' => ['committed' => 3], 'wal' => ['size' => 4120]]));
+
+        $stats = $this->client->stats();
+
+        self::assertSame(['writes' => ['committed' => 3], 'wal' => ['size' => 4120]], $stats);
+        self::assertSame(
+            [['GET', '/stats']],
+            array_map(static fn(array $r): array => [$r['method'], $r['path']], $this->transport->requests),
+        );
+    }
+
+    public function testStatsRejectsAList(): void
+    {
+        $this->transport->push(new Response(200, ['content-type' => 'application/json'], '[1,2]'));
+
+        $this->expectException(ProtocolException::class);
+        $this->client->stats();
+    }
+
     public function testPauseAsksAgainWhileTransactionsAreOpen(): void
     {
         $this->transport->push(

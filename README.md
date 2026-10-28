@@ -323,8 +323,14 @@ Every server error extends `ServerException`, with `$statusCode`,
 
 ```php
 $client->health();    // Health { status, paused, version }
+$client->stats();     // array: the counters of GET /stats
 $client->optimize();  // refreshes the statistics SQLite plans queries with
 ```
+
+`stats()` returns the counters as the server sends them. Their format
+follows the server version. See
+[Counters](https://tamarackdb.github.io/docs/operations/monitoring/#counters)
+for what they mean.
 
 In development mode, a test suite empties the store with:
 

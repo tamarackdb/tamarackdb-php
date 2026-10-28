@@ -227,6 +227,18 @@ final class Client
     }
 
     /**
+     * The counters of GET /stats, since the server started, as the server
+     * sends them. Their format follows the server version. See
+     * https://tamarackdb.github.io/docs/operations/monitoring/#counters
+     *
+     * @return array<string, mixed>
+     */
+    public function stats(): array
+    {
+        return Json::decodeObject($this->api->call('GET', '/stats')->body);
+    }
+
+    /**
      * Stops transactions from beginning, and returns once the pause is in
      * place. While the server answers that transactions are still open,
      * it asks again every $retryAfter milliseconds. See
